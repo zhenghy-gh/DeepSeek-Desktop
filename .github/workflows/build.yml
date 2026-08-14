@@ -40,13 +40,13 @@ jobs:
           cache: npm
 
       - name: 安装依赖
-        run: npm ci
+        run: npm ci 2>&1 | tee /tmp/ci.log
 
       - name: 生成图标
-        run: node scripts/gen-icon.mjs
+        run: node scripts/gen-icon.mjs 2>&1 | tee /tmp/gen.log
       - if: matrix.make_icns
         name: 生成 macOS icns
-        run: bash scripts/make-icns.sh
+        run: bash scripts/make-icns.sh 2>&1 | tee -a /tmp/gen.log
 
       - name: 准备内置 dsh 运行时
         run: node scripts/prepare-runtime.mjs 2>&1 | tee /tmp/prepare.log
@@ -62,9 +62,23 @@ jobs:
         with:
           name: diag-logs-${{ matrix.target }}
           path: |
+            /tmp/ci.log
+            /tmp/gen.log
             /tmp/prepare.log
             /tmp/build.log
           if-no-files-found: ignore
+
+      - name: 报告失败原因（注解）
+        if: failure()
+        run: |
+          for f in /tmp/ci.log /tmp/gen.log /tmp/prepare.log /tmp/build.log; do
+            if [ -s "$f" ]; then
+              BODY=$(tail -c 2500 "$f" | tr '\r' ' ' | sed 's/%/%25/g' | tr '\n' '%0A')
+              echo "::error file=$(basename "$f")::${BODY}"
+            else
+              echo "::warning file=$(basename "$f")::(日志为空或步骤未执行)"
+            fi
+          done
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
