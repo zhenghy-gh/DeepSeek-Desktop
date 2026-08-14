@@ -174,31 +174,12 @@ body {
   color: var(--fg);
 }
 
-/* ---------- 内容区 ---------- */
+/* ---------- 内容区（由主进程 WebContentsView 填充） ---------- */
 
 #content {
   flex: 1;
   position: relative;
   min-height: 0;
-}
-
-.view-wrap {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-}
-
-.view-wrap.hidden {
-  display: none;
-}
-
-webview {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  border: none;
   background: var(--bg);
 }
 

@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, Menu, ipcMain, shell, dialog } = require('electron')
+const { app, BrowserWindow, WebContentsView, Menu, ipcMain, shell } = require('electron')
 const { spawn, execFile } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -10,11 +10,18 @@ const http = require('node:http')
 const HARNESS_PROBE_PORTS = [3080, 3081, 3082, 3083]
 const CHAT_URL = 'https://chat.deepseek.com'
 const BOOT_MARKER = '__DSH_BOOT__'
+const TOOLBAR_H = 46
+const CHROME_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
 let mainWindow = null
+let chatView = null
+let harnessView = null
+let activeTab = 'chat'
 let harnessChild = null
 let harnessOwned = false // true when we spawned the server ourselves
 let harnessPort = 3080
+let harnessUrl = null
 let lastStatus = 'connecting'
 let lastDetail = '正在检查 Harness…'
 let logTail = [] // last lines of dsh output for diagnostics
@@ -29,6 +36,11 @@ function log(...args) {
 function sendStatus(status, detail) {
   lastStatus = status
   lastDetail = detail
+  // 出错时隐藏 Harness 视图，露出渲染层的错误面板；恢复后按当前标签页决定显隐
+  if (harnessView) {
+    if (status === 'error') harnessView.setVisible(false)
+    else if (status === 'running' && activeTab === 'harness') harnessView.setVisible(true)
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('harness-status', { status, detail, port: harnessPort })
   }
@@ -120,7 +132,7 @@ function probePort(port, timeoutMs = 1200) {
         res.on('data', (c) => chunks.push(c))
         res.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf8')
-          resolve(body.includes(BOOT_MARKER) || body.includes('harness') ? { alive: true, isHarness: body.includes(BOOT_MARKER) } : { alive: true, isHarness: false })
+          resolve({ alive: true, isHarness: body.includes(BOOT_MARKER) })
         })
       }
     )
@@ -173,6 +185,7 @@ async function ensureHarness() {
     harnessOwned = false
     log(`harness already running on port ${existing}, will reuse it`)
     sendStatus('running', `已连接现有 Harness（端口 ${existing}）`)
+    loadHarnessView()
     return
   }
 
@@ -218,6 +231,7 @@ async function ensureHarness() {
       harnessPort = port
       log(`harness ready on port ${port}`)
       sendStatus('running', `Harness 已启动（端口 ${port}）`)
+      loadHarnessView()
       return
     }
     if (!harnessChild || (harnessChild.exitCode === null && !harnessChild.signalCode)) {
@@ -249,7 +263,50 @@ function stopOwnHarness() {
   }
 }
 
-// ---------- 窗口 ----------
+// ---------- 视图（WebContentsView，精确控制尺寸与位置） ----------
+
+function layoutViews() {
+  if (!mainWindow) return
+  const [w, h] = mainWindow.getContentSize()
+  const bounds = { x: 0, y: TOOLBAR_H, width: w, height: Math.max(0, h - TOOLBAR_H) }
+  if (chatView) chatView.setBounds(bounds)
+  if (harnessView) harnessView.setBounds(bounds)
+}
+
+function activeView() {
+  return activeTab === 'chat' ? chatView : harnessView
+}
+
+function switchTab(name) {
+  if (name !== 'chat' && name !== 'harness') return
+  activeTab = name
+  if (chatView) chatView.setVisible(name === 'chat')
+  if (harnessView) harnessView.setVisible(name === 'harness' && lastStatus === 'running')
+  const v = activeView()
+  if (v) v.webContents.focus()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('tab-changed', name)
+  }
+}
+
+function loadHarnessView() {
+  if (!harnessView) return
+  const url = `http://127.0.0.1:${harnessPort}`
+  harnessUrl = url
+  harnessView.webContents.loadURL(url)
+}
+
+function onBeforeInput(webContents, event, input) {
+  if (!input.meta && !input.control) return
+  const key = (input.key || '').toLowerCase()
+  if (key === '1' || key === '2') {
+    event.preventDefault()
+    switchTab(key === '1' ? 'chat' : 'harness')
+  } else if (key === 'r' && input.type === 'keyDown') {
+    event.preventDefault()
+    activeView()?.webContents.reload()
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -263,37 +320,71 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webviewTag: true,
       sandbox: true,
     },
   })
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
 
-  // 等渲染层就绪后再探测/启动 Harness，避免状态事件在监听器注册前丢失
-  mainWindow.webContents.on('did-finish-load', () => {
-    ensureHarness()
-  })
-
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (url) shell.openExternal(url)
     return { action: 'deny' }
   })
+  mainWindow.webContents.on('before-input-event', (e, i) => onBeforeInput(mainWindow.webContents, e, i))
 
-  mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (!input.meta && !input.control) return
-    const key = (input.key || '').toLowerCase()
-    if (key === '1' || key === '2') {
-      event.preventDefault()
-      mainWindow.webContents.send('shortcut', key === '1' ? 'tab-chat' : 'tab-harness')
-    } else if (key === 'r' && input.type === 'keyDown') {
-      event.preventDefault()
-      mainWindow.webContents.send('shortcut', 'reload-active')
+  // 对话视图
+  chatView = new WebContentsView({
+    webPreferences: {
+      partition: 'persist:deepseek',
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+  chatView.webContents.setWindowOpenHandler(({ url }) => {
+    if (url) shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  chatView.webContents.setUserAgent(CHROME_UA)
+  chatView.webContents.loadURL(CHAT_URL)
+
+  // Harness 视图
+  harnessView = new WebContentsView({
+    webPreferences: {
+      partition: 'persist:harness',
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+  harnessView.webContents.setWindowOpenHandler(({ url }) => {
+    if (url) shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  harnessView.webContents.on('did-fail-load', (_e, code, _desc, _url, isMainFrame) => {
+    if (isMainFrame && code === -102 && lastStatus === 'running' && harnessUrl) {
+      // 连接被拒：可能是服务刚重启，自动重试
+      setTimeout(() => {
+        if (harnessUrl && lastStatus === 'running') harnessView.webContents.loadURL(harnessUrl)
+      }, 1500)
     }
   })
 
+  mainWindow.contentView.addChildView(chatView)
+  mainWindow.contentView.addChildView(harnessView)
+  harnessView.setVisible(false)
+  layoutViews()
+
+  mainWindow.on('resize', layoutViews)
+  mainWindow.on('enter-full-screen', layoutViews)
+  mainWindow.on('leave-full-screen', layoutViews)
   mainWindow.on('closed', () => {
     mainWindow = null
+  })
+
+  // 等渲染层就绪后再探测/启动 Harness，避免状态事件在监听器注册前丢失
+  mainWindow.webContents.on('did-finish-load', () => {
+    ensureHarness()
   })
 }
 
@@ -304,7 +395,12 @@ ipcMain.handle('desk:get-state', () => ({
   port: harnessPort,
   status: lastStatus,
   detail: lastDetail,
+  activeTab,
 }))
+
+ipcMain.handle('desk:switch-tab', (_e, name) => {
+  switchTab(name)
+})
 
 ipcMain.handle('desk:open-external', (_e, url) => {
   if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url)
@@ -339,14 +435,14 @@ function buildMenu() {
     {
       label: '标签页',
       submenu: [
-        { label: 'DeepSeek 对话', accelerator: 'CmdOrCtrl+1', click: () => mainWindow?.webContents.send('shortcut', 'tab-chat') },
-        { label: 'Harness', accelerator: 'CmdOrCtrl+2', click: () => mainWindow?.webContents.send('shortcut', 'tab-harness') },
+        { label: 'DeepSeek 对话', accelerator: 'CmdOrCtrl+1', click: () => switchTab('chat') },
+        { label: 'Harness', accelerator: 'CmdOrCtrl+2', click: () => switchTab('harness') },
       ],
     },
     {
       label: '查看',
       submenu: [
-        { label: '重新载入当前标签页', accelerator: 'CmdOrCtrl+R', click: () => mainWindow?.webContents.send('shortcut', 'reload-active') },
+        { label: '重新载入当前标签页', accelerator: 'CmdOrCtrl+R', click: () => activeView()?.webContents.reload() },
         { type: 'separator' },
         { role: 'togglefullscreen', label: '切换全屏' },
         { role: 'toggleDevTools', label: '开发者工具' },

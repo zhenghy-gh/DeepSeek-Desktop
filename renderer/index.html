@@ -30,19 +30,14 @@
     </div>
   </header>
 
+  <!-- 内容区由主进程的 WebContentsView 填充，仅错误面板等浮层由 DOM 承载 -->
   <main id="content">
-    <div class="view-wrap" id="wrap-chat">
-      <webview id="view-chat" partition="persist:deepseek" allowpopups useragent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"></webview>
-    </div>
-    <div class="view-wrap hidden" id="wrap-harness">
-      <webview id="view-harness" partition="persist:harness" allowpopups></webview>
-      <div id="harness-overlay" class="overlay hidden">
-        <div class="overlay-card">
-          <div class="overlay-title">Harness 不可用</div>
-          <div id="overlay-detail" class="overlay-detail">正在检查…</div>
-          <button id="btn-retry" class="btn">重新启动 Harness</button>
-          <button id="btn-log" class="btn ghost">查看日志</button>
-        </div>
+    <div id="harness-overlay" class="overlay hidden">
+      <div class="overlay-card">
+        <div class="overlay-title">Harness 不可用</div>
+        <div id="overlay-detail" class="overlay-detail">正在检查…</div>
+        <button id="btn-retry" class="btn">重新启动 Harness</button>
+        <button id="btn-log" class="btn ghost">查看日志</button>
       </div>
     </div>
   </main>

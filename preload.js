@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('deskAPI', {
   getState: () => ipcRenderer.invoke('desk:get-state'),
+  switchTab: (name) => ipcRenderer.invoke('desk:switch-tab', name),
   openExternal: (url) => ipcRenderer.invoke('desk:open-external', url),
   restartHarness: () => ipcRenderer.invoke('desk:restart-harness'),
   getLog: () => ipcRenderer.invoke('desk:get-log'),
@@ -12,9 +13,9 @@ contextBridge.exposeInMainWorld('deskAPI', {
     ipcRenderer.on('harness-status', h)
     return () => ipcRenderer.removeListener('harness-status', h)
   },
-  onShortcut: (cb) => {
+  onTabChanged: (cb) => {
     const h = (_e, name) => cb(name)
-    ipcRenderer.on('shortcut', h)
-    return () => ipcRenderer.removeListener('shortcut', h)
+    ipcRenderer.on('tab-changed', h)
+    return () => ipcRenderer.removeListener('tab-changed', h)
   },
 })
