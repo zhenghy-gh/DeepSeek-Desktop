@@ -56,9 +56,10 @@ body {
   white-space: nowrap;
 }
 
-#brand .logo {
-  color: var(--accent);
-  font-size: 16px;
+#brand .logo-img {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
 }
 
 #brand .name {
