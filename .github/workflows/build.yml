@@ -52,7 +52,7 @@ jobs:
         run: node scripts/prepare-runtime.mjs 2>&1 | tee /tmp/prepare.log
 
       - name: 构建安装包
-        run: npx electron-builder ${{ matrix.args }} 2>&1 | tee /tmp/build.log
+        run: npx electron-builder ${{ matrix.args }} --publish never 2>&1 | tee /tmp/build.log
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
