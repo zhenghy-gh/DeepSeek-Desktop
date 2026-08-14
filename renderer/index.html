@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'"
+  />
+  <title>DeepSeek Desktop</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="toolbar">
+    <div id="brand">
+      <span class="logo">◈</span>
+      <span class="name">DeepSeek Desktop</span>
+    </div>
+    <nav id="tabs">
+      <button class="tab active" data-tab="chat">
+        <span class="tab-icon">💬</span> DeepSeek 对话
+      </button>
+      <button class="tab" data-tab="harness">
+        <span class="tab-icon">🛠</span> Harness
+      </button>
+    </nav>
+    <div id="status">
+      <span id="statusDot" class="dot"></span>
+      <span id="statusText">正在连接 Harness…</span>
+      <button id="openBrowser" title="在系统浏览器中打开当前标签页">↗</button>
+    </div>
+  </header>
+
+  <main id="content">
+    <div class="view-wrap" id="wrap-chat">
+      <webview id="view-chat" partition="persist:deepseek" allowpopups useragent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"></webview>
+    </div>
+    <div class="view-wrap hidden" id="wrap-harness">
+      <webview id="view-harness" partition="persist:harness" allowpopups></webview>
+      <div id="harness-overlay" class="overlay hidden">
+        <div class="overlay-card">
+          <div class="overlay-title">Harness 不可用</div>
+          <div id="overlay-detail" class="overlay-detail">正在检查…</div>
+          <button id="btn-retry" class="btn">重新启动 Harness</button>
+          <button id="btn-log" class="btn ghost">查看日志</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

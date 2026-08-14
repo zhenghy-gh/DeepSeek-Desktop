@@ -1,0 +1,393 @@
+'use strict'
+
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog } = require('electron')
+const { spawn, execFile } = require('node:child_process')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const http = require('node:http')
+
+const HARNESS_PROBE_PORTS = [3080, 3081, 3082, 3083]
+const CHAT_URL = 'https://chat.deepseek.com'
+const BOOT_MARKER = '__DSH_BOOT__'
+
+let mainWindow = null
+let harnessChild = null
+let harnessOwned = false // true when we spawned the server ourselves
+let harnessPort = 3080
+let lastStatus = 'connecting'
+let lastDetail = '正在检查 Harness…'
+let logTail = [] // last lines of dsh output for diagnostics
+
+function log(...args) {
+  const line = `[desktop ${new Date().toISOString()}] ${args.join(' ')}`
+  console.log(line)
+  logTail.push(line)
+  if (logTail.length > 200) logTail.shift()
+}
+
+function sendStatus(status, detail) {
+  lastStatus = status
+  lastDetail = detail
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('harness-status', { status, detail, port: harnessPort })
+  }
+}
+
+// ---------- Node / dsh 定位 ----------
+
+function findNode() {
+  const candidates = []
+  if (process.env.DSH_DESKTOP_NODE) candidates.push(process.env.DSH_DESKTOP_NODE)
+  candidates.push('/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node')
+  try {
+    const nvmDir = path.join(os.homedir(), '.nvm', 'versions', 'node')
+    if (fs.existsSync(nvmDir)) {
+      const versions = fs.readdirSync(nvmDir).sort((a, b) => {
+        const va = a.split('.').map(Number)
+        const vb = b.split('.').map(Number)
+        for (let i = 0; i < 3; i++) return (vb[i] || 0) - (va[i] || 0)
+        return 0
+      })
+      for (const v of versions) candidates.push(path.join(nvmDir, v, 'bin', 'node'))
+    }
+  } catch { /* ignore */ }
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return c
+    } catch { /* ignore */ }
+  }
+  return null
+}
+
+function findBundledDsh() {
+  try {
+    const p = path.join(process.resourcesPath, 'dsh-runtime', 'node_modules', '.bin', 'dsh')
+    return fs.existsSync(p) ? p : null
+  } catch {
+    return null
+  }
+}
+
+function findNpxDsh() {
+  // 扫描 ~/.npm/_npx/<hash>/node_modules/.bin/dsh，取最新
+  try {
+    const npxDir = path.join(os.homedir(), '.npm', '_npx')
+    if (!fs.existsSync(npxDir)) return null
+    let best = null
+    let bestTime = 0
+    for (const entry of fs.readdirSync(npxDir)) {
+      const p = path.join(npxDir, entry, 'node_modules', '.bin', 'dsh')
+      try {
+        if (fs.existsSync(p)) {
+          const st = fs.statSync(p)
+          if (st.mtimeMs > bestTime) {
+            bestTime = st.mtimeMs
+            best = p
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    return best
+  } catch {
+    return null
+  }
+}
+
+function extendedEnv() {
+  const extra = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    path.join(os.homedir(), '.nvm', 'versions', 'node', '*', 'bin'),
+  ]
+  const merged = (process.env.PATH || '')
+    .split(path.delimiter)
+    .filter(Boolean)
+  for (const d of extra) if (d && !merged.includes(d)) merged.push(d)
+  return { ...process.env, PATH: merged.join(path.delimiter) }
+}
+
+// ---------- Harness 探测 / 启动 ----------
+
+function probePort(port, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: '127.0.0.1', port, path: '/', timeout: timeoutMs },
+      (res) => {
+        const chunks = []
+        res.on('data', (c) => chunks.push(c))
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8')
+          resolve(body.includes(BOOT_MARKER) || body.includes('harness') ? { alive: true, isHarness: body.includes(BOOT_MARKER) } : { alive: true, isHarness: false })
+        })
+      }
+    )
+    req.on('timeout', () => {
+      req.destroy()
+      resolve({ alive: false, isHarness: false })
+    })
+    req.on('error', () => resolve({ alive: false, isHarness: false }))
+  })
+}
+
+async function findExistingHarness() {
+  for (const port of HARNESS_PROBE_PORTS) {
+    const r = await probePort(port)
+    if (r.alive && r.isHarness) return port
+  }
+  return null
+}
+
+function spawnHarness(nodePath, dshScript, port) {
+  const args = nodePath
+    ? [dshScript, 'web', '--port', String(port)]
+    : ['web', '--port', String(port)]
+  const bin = nodePath || dshScript
+  log(`spawning harness: ${bin} ${args.join(' ')}`)
+  const child = spawn(bin, args, {
+    env: extendedEnv(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  child.stdout.on('data', (d) => log(`[dsh] ${String(d).trimEnd()}`))
+  child.stderr.on('data', (d) => log(`[dsh:err] ${String(d).trimEnd()}`))
+  child.on('exit', (code, signal) => {
+    log(`dsh exited code=${code} signal=${signal} (owned=${harnessOwned})`)
+    if (harnessOwned && mainWindow && !mainWindow.isDestroyed()) {
+      sendStatus('error', `Harness 进程意外退出 (code=${code})`)
+    }
+  })
+  return child
+}
+
+async function ensureHarness() {
+  sendStatus('connecting', '正在检查 Harness…')
+
+  const existing = await findExistingHarness()
+  if (existing !== null) {
+    harnessPort = existing
+    harnessOwned = false
+    log(`harness already running on port ${existing}, will reuse it`)
+    sendStatus('running', `已连接现有 Harness（端口 ${existing}）`)
+    return
+  }
+
+  const nodePath = findNode()
+  let dshScript = findBundledDsh()
+  let viaPath = false
+  if (!dshScript) {
+    dshScript = findNpxDsh()
+  }
+  if (!dshScript) {
+    viaPath = true
+    dshScript = 'dsh'
+  }
+
+  if (!nodePath && viaPath) {
+    sendStatus('error', '未找到 node，也无法定位 dsh')
+    return
+  }
+
+  harnessOwned = true
+  let lastErr = null
+  for (const port of HARNESS_PROBE_PORTS) {
+    const started = Date.now()
+    harnessChild = spawnHarness(nodePath, dshScript, port)
+    sendStatus('starting', `正在启动 Harness（端口 ${port}）…`)
+
+    // 等就绪或失败
+    let ready = false
+    while (Date.now() - started < 60000) {
+      const r = await probePort(port, 1000)
+      if (r.alive && r.isHarness) {
+        ready = true
+        break
+      }
+      // 进程已退出且从未就绪 → 尝试下一个端口
+      if (harnessChild.exitCode !== null || harnessChild.signalCode) {
+        if (harnessChild.exitCode !== null) lastErr = `exit code ${harnessChild.exitCode}`
+        break
+      }
+      await new Promise((r2) => setTimeout(r2, 800))
+    }
+    if (ready) {
+      harnessPort = port
+      log(`harness ready on port ${port}`)
+      sendStatus('running', `Harness 已启动（端口 ${port}）`)
+      return
+    }
+    if (!harnessChild || (harnessChild.exitCode === null && !harnessChild.signalCode)) {
+      // 超时未就绪
+      lastErr = '启动超时'
+      try { harnessChild.kill('SIGKILL') } catch { /* ignore */ }
+    } else {
+      try { harnessChild.kill('SIGKILL') } catch { /* ignore */ }
+    }
+    harnessChild = null
+  }
+  sendStatus('error', `Harness 启动失败：${lastErr || '未知错误'}`)
+  log('harness start failed, last lines:', logTail.slice(-20).join('\n'))
+}
+
+function stopOwnHarness() {
+  if (harnessOwned && harnessChild) {
+    log('stopping harness (owned)')
+    const child = harnessChild
+    harnessChild = null
+    try {
+      child.kill('SIGTERM')
+    } catch { /* ignore */ }
+    setTimeout(() => {
+      try {
+        if (child.exitCode === null) child.kill('SIGKILL')
+      } catch { /* ignore */ }
+    }, 4000)
+  }
+}
+
+// ---------- 窗口 ----------
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 850,
+    minWidth: 960,
+    minHeight: 640,
+    title: 'DeepSeek Desktop',
+    backgroundColor: '#0d1117',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      webviewTag: true,
+      sandbox: true,
+    },
+  })
+
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+
+  // 等渲染层就绪后再探测/启动 Harness，避免状态事件在监听器注册前丢失
+  mainWindow.webContents.on('did-finish-load', () => {
+    ensureHarness()
+  })
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (!input.meta && !input.control) return
+    const key = (input.key || '').toLowerCase()
+    if (key === '1' || key === '2') {
+      event.preventDefault()
+      mainWindow.webContents.send('shortcut', key === '1' ? 'tab-chat' : 'tab-harness')
+    } else if (key === 'r' && input.type === 'keyDown') {
+      event.preventDefault()
+      mainWindow.webContents.send('shortcut', 'reload-active')
+    }
+  })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
+}
+
+// ---------- IPC ----------
+
+ipcMain.handle('desk:get-state', () => ({
+  chatUrl: CHAT_URL,
+  port: harnessPort,
+  status: lastStatus,
+  detail: lastDetail,
+}))
+
+ipcMain.handle('desk:open-external', (_e, url) => {
+  if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url)
+})
+
+ipcMain.handle('desk:restart-harness', async () => {
+  if (harnessOwned) {
+    stopOwnHarness()
+    await new Promise((r) => setTimeout(r, 800))
+  }
+  await ensureHarness()
+  return { port: harnessPort }
+})
+
+ipcMain.handle('desk:get-log', () => logTail.slice(-40).join('\n'))
+
+// ---------- 菜单 ----------
+
+function buildMenu() {
+  const isMac = process.platform === 'darwin'
+  const template = [
+    ...(isMac
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: 'about', label: '关于 DeepSeek Desktop' },
+            { type: 'separator' },
+            { role: 'quit', label: '退出 DeepSeek Desktop' },
+          ],
+        }]
+      : []),
+    {
+      label: '标签页',
+      submenu: [
+        { label: 'DeepSeek 对话', accelerator: 'CmdOrCtrl+1', click: () => mainWindow?.webContents.send('shortcut', 'tab-chat') },
+        { label: 'Harness', accelerator: 'CmdOrCtrl+2', click: () => mainWindow?.webContents.send('shortcut', 'tab-harness') },
+      ],
+    },
+    {
+      label: '查看',
+      submenu: [
+        { label: '重新载入当前标签页', accelerator: 'CmdOrCtrl+R', click: () => mainWindow?.webContents.send('shortcut', 'reload-active') },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: '切换全屏' },
+        { role: 'toggleDevTools', label: '开发者工具' },
+      ],
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { role: 'minimize', label: '最小化' },
+        { role: 'zoom', label: '缩放' },
+        ...(isMac ? [{ type: 'separator' }, { role: 'front', label: '前置全部窗口' }] : []),
+      ],
+    },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+// ---------- 生命周期 ----------
+
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+
+  app.whenReady().then(() => {
+    buildMenu()
+    createWindow()
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  })
+
+  app.on('window-all-closed', () => {
+    app.quit()
+  })
+
+  app.on('before-quit', () => {
+    stopOwnHarness()
+  })
+}
