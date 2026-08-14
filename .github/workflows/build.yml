@@ -42,12 +42,22 @@ jobs:
         run: bash scripts/make-icns.sh
 
       - name: 准备内置 dsh 运行时
-        run: node scripts/prepare-runtime.mjs
+        run: node scripts/prepare-runtime.mjs 2>&1 | tee /tmp/prepare.log
 
       - name: 构建安装包
-        run: npx electron-builder ${{ matrix.args }}
+        run: npx electron-builder ${{ matrix.args }} 2>&1 | tee /tmp/build.log
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: 上传失败诊断日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-logs-${{ matrix.target }}
+          path: |
+            /tmp/prepare.log
+            /tmp/build.log
+          if-no-files-found: ignore
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
