@@ -32,8 +32,19 @@ npm install          # 安装 electron / electron-builder
 npm run icon         # 生成应用图标（需要 macOS 自带 sips/iconutil）
 npm run prepare:runtime  # 将本机 dsh 运行时复制进 dsh-runtime/
 npm start            # 开发模式运行
-npm run dist         # 构建 dmg + zip 安装包（输出到 dist/）
+npm run dist:mac     # 构建 macOS dmg + zip（输出到 dist/）
+npm run dist:win     # 构建 Windows NSIS 安装包（建议在 Windows 或 CI 上执行）
+npm run dist:linux   # 构建 Linux AppImage + deb
 ```
+
+> 国内网络下载 Electron 二进制较慢时，构建前设置镜像：
+> `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`
+
+## 多平台安装包（GitHub Actions）
+
+推送 `v*` 标签会自动触发 [.github/workflows/build.yml](.github/workflows/build.yml)，
+在 macOS / Windows / Ubuntu 原生环境分别构建 dmg、zip、NSIS exe、AppImage、deb，
+并发布到对应 Release 页面；也可在 Actions 页面手动触发（workflow_dispatch）。
 
 ## 工作原理
 

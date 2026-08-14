@@ -30,15 +30,7 @@
       "preload.js",
       "renderer/**/*"
     ],
-    "extraResources": [
-      {
-        "from": "dsh-runtime",
-        "to": "dsh-runtime",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
+    "afterPack": "scripts/after-pack.mjs",
     "mac": {
       "target": [
         "dmg",

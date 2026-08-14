@@ -141,13 +141,16 @@ async function findExistingHarness() {
 }
 
 function spawnHarness(nodePath, dshScript, port) {
+  const env = extendedEnv()
   const args = nodePath
     ? [dshScript, 'web', '--port', String(port)]
     : ['web', '--port', String(port)]
   const bin = nodePath || dshScript
+  // 无系统 node 时用 Electron 自带的 Node（ELECTRON_RUN_AS_NODE）；pty.node 是 N-API，兼容
+  if (nodePath === process.execPath) env.ELECTRON_RUN_AS_NODE = '1'
   log(`spawning harness: ${bin} ${args.join(' ')}`)
   const child = spawn(bin, args, {
-    env: extendedEnv(),
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   child.stdout.on('data', (d) => log(`[dsh] ${String(d).trimEnd()}`))
@@ -173,7 +176,7 @@ async function ensureHarness() {
     return
   }
 
-  const nodePath = findNode()
+  const nodePath = findNode() || process.execPath // 兜底：Electron 自带 Node
   let dshScript = findBundledDsh()
   let viaPath = false
   if (!dshScript) {
@@ -184,7 +187,7 @@ async function ensureHarness() {
     dshScript = 'dsh'
   }
 
-  if (!nodePath && viaPath) {
+  if (nodePath === process.execPath && viaPath) {
     sendStatus('error', '未找到 node，也无法定位 dsh')
     return
   }
