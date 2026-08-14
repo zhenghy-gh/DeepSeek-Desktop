@@ -15,6 +15,23 @@ const viewHarness = $('view-harness')
 
 // ---------- 标签页切换 ----------
 
+// Electron 的 <webview> 对 flex/百分比布局支持不完整，必须显式同步像素尺寸
+function syncViewSize(view) {
+  const wrap = view.parentElement
+  if (!wrap || wrap.classList.contains('hidden')) return
+  const w = wrap.clientWidth
+  const h = wrap.clientHeight
+  if (w > 0 && h > 0 && (view.style.width !== w + 'px' || view.style.height !== h + 'px')) {
+    view.style.width = w + 'px'
+    view.style.height = h + 'px'
+  }
+}
+
+function syncAllViews() {
+  syncViewSize(viewChat)
+  syncViewSize(viewHarness)
+}
+
 function switchTab(name) {
   state.activeTab = name
   document.querySelectorAll('.tab').forEach((t) => {
@@ -22,7 +39,11 @@ function switchTab(name) {
   })
   $('wrap-chat').classList.toggle('hidden', name !== 'chat')
   $('wrap-harness').classList.toggle('hidden', name !== 'harness')
+  requestAnimationFrame(syncAllViews)
 }
+
+// 窗口尺寸变化时同步
+window.addEventListener('resize', () => requestAnimationFrame(syncAllViews))
 
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => switchTab(tab.dataset.tab))
@@ -68,6 +89,8 @@ function attachWebview(view, isHarness) {
   view.addEventListener('new-window', (e) => {
     if (e.url) window.deskAPI.openExternal(e.url)
   })
+  view.addEventListener('dom-ready', () => requestAnimationFrame(() => syncViewSize(view)))
+  view.addEventListener('did-finish-load', () => requestAnimationFrame(() => syncViewSize(view)))
   view.addEventListener('did-fail-load', (e) => {
     if (isHarness && e.errorCode === -102 && state.harnessStatus === 'running') {
       // 连接被拒：可能是服务刚重启，自动重试
@@ -132,4 +155,6 @@ window.deskAPI.getState().then((s) => {
   } else if (s.status && s.status !== 'connecting') {
     setStatus(s.status, s.detail)
   }
+  requestAnimationFrame(syncAllViews)
+  setTimeout(syncAllViews, 500)
 })
