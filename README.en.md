@@ -60,6 +60,21 @@ and publishes them to the corresponding Release page. It can also be triggered m
 - The Windows NSIS installer must be built on Windows or in CI (cross-building on macOS requires wine)
 - The in-app UI text is currently Chinese only
 
+## FAQ
+
+### macOS says "app is damaged and can't be opened"
+
+This is the normal Gatekeeper block for unsigned apps (downloads carry a quarantine flag, and macOS 15 reports "damaged"). To fix:
+
+1. Right-click `DeepSeek Desktop.app` → choose "Open" → click "Open" again;
+2. If it still fails, run this in Terminal and open the app again:
+
+```bash
+xattr -cr "/Applications/DeepSeek Desktop.app"
+```
+
+> Signing and notarizing with an Apple Developer account would remove this warning entirely.
+
 ## License
 
 MIT

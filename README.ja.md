@@ -61,6 +61,21 @@ macOS / Windows / Ubuntu の各ネイティブランナーで dmg、zip、NSIS e
 - Windows の NSIS インストーラは Windows または CI でのビルドが必要（macOS でのクロスビルドには wine が必要）
 - アプリ内 UI の表示言語は現在中国語のみ
 
+## よくある質問
+
+### macOS で「アプリが壊れているため開けません」と表示される
+
+署名されていないアプリに対する Gatekeeper の通常のブロックです（ダウンロードしたファイルには隔離フラグが付き、macOS 15 では「破損」と表示されます）。対処：
+
+1. `DeepSeek Desktop.app` を右クリック →「開く」→ 再度「開く」をクリック
+2. それでも開けない場合はターミナルで以下を実行してから再度開く：
+
+```bash
+xattr -cr "/Applications/DeepSeek Desktop.app"
+```
+
+> Apple Developer アカウントで署名・公証すれば、この警告は完全に消えます。
+
 ## ライセンス
 
 MIT

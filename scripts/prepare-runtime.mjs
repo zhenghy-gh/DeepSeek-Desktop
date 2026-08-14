@@ -25,7 +25,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..')
 const destRoot = path.join(projectRoot, 'dsh-runtime')
 
-const platformDir = `${process.platform}-${process.arch}` // darwin-arm64 / win32-x64 / linux-x64 ...
+// 保留哪些平台的原生预编译：默认当前平台；多架构打包时用 DSH_RUNTIME_ARCHES 指定
+// 例如 DSH_RUNTIME_ARCHES="darwin-arm64,darwin-x64"（macOS 双架构安装包）
+const keepArches = (process.env.DSH_RUNTIME_ARCHES || `${process.platform}-${process.arch}`)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+const archPattern = keepArches.map((a) => `${a}($|[/\\\\])`).join('|')
 
 function findDshBin() {
   if (process.env.DSH_DESKTOP_DSH && fs.existsSync(process.env.DSH_DESKTOP_DSH)) {
@@ -128,9 +134,7 @@ function prune(root) {
       /\.(md|markdown)$/i.test(base) ||
       /^(readme|changelog|history|notice|authors|copying|license)(\.|$)/i.test(base) ||
       /^node_modules[/\\]@img[/\\]sharp-wasm32($|[/\\])/.test(rel) ||
-      new RegExp(
-        `^node_modules[/\\\\]node-pty[/\\\\]prebuilds[/\\\\](?!${platformDir}($|[/\\\\]))`
-      ).test(rel)
+      new RegExp(`^node_modules[/\\\\]node-pty[/\\\\]prebuilds[/\\\\](?!(${archPattern}))`).test(rel)
     if (remove) {
       try {
         const st = fs.statSync(p)
@@ -179,6 +183,6 @@ const { removed, removedBytes } = prune(destRoot)
 console.log(`裁剪: ${removed} 个文件，约 ${(removedBytes / 1024 / 1024).toFixed(1)} MB`)
 
 const sizeMb = (dirSize(destRoot) / 1024 / 1024).toFixed(0)
-console.log(`dsh-runtime 最终大小: ${sizeMb} MB（解压后，${platformDir}）`)
+console.log(`dsh-runtime 最终大小: ${sizeMb} MB（解压后，保留架构: ${keepArches.join(', ')}）`)
 fs.rmSync(path.join(projectRoot, '.runtime-install'), { recursive: true, force: true })
 console.log('完成 ✅')

@@ -20,16 +20,19 @@ jobs:
         include:
           - os: macos-latest
             target: mac
-            args: --mac dmg zip
+            args: --mac dmg zip --arm64 --x64
             make_icns: true
+            runtime_arches: darwin-arm64,darwin-x64
           - os: windows-latest
             target: win
             args: --win nsis
             make_icns: false
+            runtime_arches: win32-x64
           - os: ubuntu-latest
             target: linux
             args: --linux AppImage deb
             make_icns: false
+            runtime_arches: linux-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +53,8 @@ jobs:
 
       - name: 准备内置 dsh 运行时
         run: node scripts/prepare-runtime.mjs 2>&1 | tee /tmp/prepare.log
+        env:
+          DSH_RUNTIME_ARCHES: ${{ matrix.runtime_arches }}
 
       - name: 构建安装包
         run: npx electron-builder ${{ matrix.args }} --publish never 2>&1 | tee /tmp/build.log

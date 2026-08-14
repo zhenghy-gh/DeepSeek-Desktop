@@ -61,6 +61,21 @@ npm run dist:linux   # 构建 Linux AppImage + deb
 - Windows NSIS 安装包需在 Windows 或 CI 上构建（macOS 上交叉构建需要 wine）
 - 应用界面文字目前为中文
 
+## 常见问题
+
+### macOS 提示"应用已损坏，无法打开"
+
+这是未签名应用被 **Gatekeeper** 拦截的正常现象（下载的安装包带隔离标记，macOS 15 会直接报"已损坏"）。解决：
+
+1. 右键 `DeepSeek Desktop.app` → 选择「打开」→ 再次点击「打开」；
+2. 仍不行，打开「终端」执行后重新打开：
+
+```bash
+xattr -cr "/Applications/DeepSeek Desktop.app"
+```
+
+> 若未来使用 Apple Developer 账号签名并公证，可彻底消除此提示。
+
 ## 许可证
 
 MIT
