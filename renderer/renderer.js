@@ -24,7 +24,7 @@ window.deskAPI.onTabChanged((name) => setActiveTab(name))
 
 // ---------- Harness 状态 ----------
 
-function setStatus(status, detail) {
+function setStatus(status, detail, extra = {}) {
   state.harnessStatus = status
   const dot = $('statusDot')
   dot.className = 'dot'
@@ -40,13 +40,22 @@ function setStatus(status, detail) {
   if (status === 'error') {
     overlay.classList.remove('hidden')
     $('overlay-detail').textContent = detail || '未知错误'
+    // 未安装 dsh → 展示安装命令
+    const box = $('install-box')
+    if (extra.noDsh && extra.installCmd) {
+      box.classList.remove('hidden')
+      $('install-cmd-text').textContent = extra.installCmd
+      $('install-hint-extra').textContent = extra.installHint || ''
+    } else {
+      box.classList.add('hidden')
+    }
   } else {
     overlay.classList.add('hidden')
   }
 }
 
-window.deskAPI.onStatus(({ status, detail }) => {
-  setStatus(status, detail)
+window.deskAPI.onStatus(({ status, detail, noDsh, installCmd, installHint }) => {
+  setStatus(status, detail, { noDsh, installCmd, installHint })
 })
 
 // ---------- 工具栏按钮 ----------
@@ -71,9 +80,21 @@ $('btn-log').addEventListener('click', async () => {
   alert(tail || '（无日志）')
 })
 
+$('btn-copy').addEventListener('click', async () => {
+  const cmd = $('install-cmd-text').textContent
+  if (!cmd) return
+  await window.deskAPI.copyText(cmd)
+  const btn = $('btn-copy')
+  const prev = btn.textContent
+  btn.textContent = '已复制 ✓'
+  setTimeout(() => {
+    btn.textContent = prev
+  }, 1500)
+})
+
 // ---------- 初始化 ----------
 
 window.deskAPI.getState().then((s) => {
-  if (s.status && s.status !== 'connecting') setStatus(s.status, s.detail)
+  if (s.status && s.status !== 'connecting') setStatus(s.status, s.detail, s)
   if (s.activeTab) setActiveTab(s.activeTab)
 })

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('deskAPI', {
   switchTab: (name) => ipcRenderer.invoke('desk:switch-tab', name),
   openExternal: (url) => ipcRenderer.invoke('desk:open-external', url),
   restartHarness: () => ipcRenderer.invoke('desk:restart-harness'),
+  copyText: (text) => ipcRenderer.invoke('desk:copy-text', text),
   getLog: () => ipcRenderer.invoke('desk:get-log'),
   onStatus: (cb) => {
     const h = (_e, payload) => cb(payload)

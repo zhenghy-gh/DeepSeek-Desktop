@@ -36,8 +36,18 @@
       <div class="overlay-card">
         <div class="overlay-title">Harness 不可用</div>
         <div id="overlay-detail" class="overlay-detail">正在检查…</div>
-        <button id="btn-retry" class="btn">重新启动 Harness</button>
-        <button id="btn-log" class="btn ghost">查看日志</button>
+        <div id="install-box" class="install-box hidden">
+          <div class="install-hint">未检测到 dsh 运行时，请先安装：</div>
+          <div class="install-cmd">
+            <code id="install-cmd-text"></code>
+            <button id="btn-copy" class="btn ghost small">复制</button>
+          </div>
+          <div id="install-hint-extra" class="install-hint small"></div>
+        </div>
+        <div class="overlay-actions">
+          <button id="btn-retry" class="btn">重新启动 Harness</button>
+          <button id="btn-log" class="btn ghost">查看日志</button>
+        </div>
       </div>
     </div>
   </main>

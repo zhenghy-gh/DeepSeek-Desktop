@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, WebContentsView, Menu, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, WebContentsView, Menu, ipcMain, shell, clipboard } = require('electron')
 const { spawn, execFile } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -24,6 +24,7 @@ let harnessPort = 3080
 let harnessUrl = null
 let lastStatus = 'connecting'
 let lastDetail = '正在检查 Harness…'
+let lastExtra = {}
 let logTail = [] // last lines of dsh output for diagnostics
 
 function log(...args) {
@@ -33,16 +34,17 @@ function log(...args) {
   if (logTail.length > 200) logTail.shift()
 }
 
-function sendStatus(status, detail) {
+function sendStatus(status, detail, extra = {}) {
   lastStatus = status
   lastDetail = detail
+  lastExtra = extra
   // 出错时隐藏 Harness 视图，露出渲染层的错误面板；恢复后按当前标签页决定显隐
   if (harnessView) {
     if (status === 'error') harnessView.setVisible(false)
     else if (status === 'running' && activeTab === 'harness') harnessView.setVisible(true)
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('harness-status', { status, detail, port: harnessPort })
+    mainWindow.webContents.send('harness-status', { status, detail, port: harnessPort, ...extra })
   }
 }
 
@@ -152,7 +154,7 @@ async function findExistingHarness() {
   return null
 }
 
-function spawnHarness(nodePath, dshScript, port) {
+function spawnHarness(nodePath, dshScript, port, viaPath = false) {
   const env = extendedEnv()
   const args = nodePath
     ? [dshScript, 'web', '--port', String(port)]
@@ -167,6 +169,17 @@ function spawnHarness(nodePath, dshScript, port) {
   })
   child.stdout.on('data', (d) => log(`[dsh] ${String(d).trimEnd()}`))
   child.stderr.on('data', (d) => log(`[dsh:err] ${String(d).trimEnd()}`))
+  child.on('error', (err) => {
+    // 通过 PATH 调 dsh 但命令不存在（未安装）
+    log(`dsh spawn error: ${err.message}`)
+    if (viaPath && err.code === 'ENOENT') {
+      sendStatus('error', '未检测到 dsh 运行时，请先安装', {
+        noDsh: true,
+        installCmd: INSTALL_CMD,
+        installHint: '安装完成后点击「重新启动」即可自动拉起 Harness',
+      })
+    }
+  })
   child.on('exit', (code, signal) => {
     log(`dsh exited code=${code} signal=${signal} (owned=${harnessOwned})`)
     if (harnessOwned && mainWindow && !mainWindow.isDestroyed()) {
@@ -176,75 +189,99 @@ function spawnHarness(nodePath, dshScript, port) {
   return child
 }
 
+const INSTALL_CMD = 'npm install -g @deepseek-ai/dsh'
+
+let ensureRunning = false
 async function ensureHarness() {
-  sendStatus('connecting', '正在检查 Harness…')
+  if (ensureRunning) return // 防重入（启动时与切标签时可能并发触发）
+  ensureRunning = true
+  try {
+    sendStatus('connecting', '正在检查 Harness…')
 
-  const existing = await findExistingHarness()
-  if (existing !== null) {
-    harnessPort = existing
-    harnessOwned = false
-    log(`harness already running on port ${existing}, will reuse it`)
-    sendStatus('running', `已连接现有 Harness（端口 ${existing}）`)
-    loadHarnessView()
-    return
-  }
-
-  const nodePath = findNode() || process.execPath // 兜底：Electron 自带 Node
-  let dshScript = findBundledDsh()
-  let viaPath = false
-  if (!dshScript) {
-    dshScript = findNpxDsh()
-  }
-  if (!dshScript) {
-    viaPath = true
-    dshScript = 'dsh'
-  }
-
-  if (nodePath === process.execPath && viaPath) {
-    sendStatus('error', '未找到 node，也无法定位 dsh')
-    return
-  }
-
-  harnessOwned = true
-  let lastErr = null
-  for (const port of HARNESS_PROBE_PORTS) {
-    const started = Date.now()
-    harnessChild = spawnHarness(nodePath, dshScript, port)
-    sendStatus('starting', `正在启动 Harness（端口 ${port}）…`)
-
-    // 等就绪或失败
-    let ready = false
-    while (Date.now() - started < 60000) {
-      const r = await probePort(port, 1000)
-      if (r.alive && r.isHarness) {
-        ready = true
-        break
-      }
-      // 进程已退出且从未就绪 → 尝试下一个端口
-      if (harnessChild.exitCode !== null || harnessChild.signalCode) {
-        if (harnessChild.exitCode !== null) lastErr = `exit code ${harnessChild.exitCode}`
-        break
-      }
-      await new Promise((r2) => setTimeout(r2, 800))
-    }
-    if (ready) {
-      harnessPort = port
-      log(`harness ready on port ${port}`)
-      sendStatus('running', `Harness 已启动（端口 ${port}）`)
+    const existing = await findExistingHarness()
+    if (existing !== null) {
+      harnessPort = existing
+      harnessOwned = false
+      log(`harness already running on port ${existing}, will reuse it`)
+      sendStatus('running', `已连接现有 Harness（端口 ${existing}）`)
       loadHarnessView()
       return
     }
-    if (!harnessChild || (harnessChild.exitCode === null && !harnessChild.signalCode)) {
-      // 超时未就绪
-      lastErr = '启动超时'
-      try { harnessChild.kill('SIGKILL') } catch { /* ignore */ }
-    } else {
-      try { harnessChild.kill('SIGKILL') } catch { /* ignore */ }
+
+    const nodePath = findNode() || process.execPath // 兜底：Electron 自带 Node
+    let dshScript = findBundledDsh()
+    let viaPath = false
+    if (!dshScript) {
+      dshScript = findNpxDsh()
     }
-    harnessChild = null
+    if (!dshScript) {
+      viaPath = true
+      dshScript = 'dsh'
+    }
+
+    if (nodePath === process.execPath && viaPath) {
+      // 既没有内置运行时，也找不到 PATH/npx 里的 dsh → 视为未安装
+      log('dsh not found: bundled=no, PATH=no, npx=no')
+      sendStatus('error', '未检测到 dsh 运行时，请先安装', {
+        noDsh: true,
+        installCmd: INSTALL_CMD,
+        installHint: '安装完成后点击「重新启动」即可自动拉起 Harness',
+      })
+      return
+    }
+
+    harnessOwned = true
+    let lastErr = null
+    for (const port of HARNESS_PROBE_PORTS) {
+      const started = Date.now()
+      harnessChild = spawnHarness(nodePath, dshScript, port, viaPath)
+      let spawnFailed = false
+      harnessChild.once('error', () => {
+        spawnFailed = true
+      })
+      sendStatus('starting', `正在启动 Harness（端口 ${port}）…`)
+
+      // 等就绪或失败
+      let ready = false
+      while (Date.now() - started < 60000) {
+        const r = await probePort(port, 1000)
+        if (r.alive && r.isHarness) {
+          ready = true
+          break
+        }
+        // spawn 失败（命令不存在）→ 不再尝试其他端口
+        if (spawnFailed) {
+          lastErr = '命令不存在'
+          break
+        }
+        // 进程已退出且从未就绪 → 尝试下一个端口
+        if (harnessChild.exitCode !== null || harnessChild.signalCode) {
+          if (harnessChild.exitCode !== null) lastErr = `exit code ${harnessChild.exitCode}`
+          break
+        }
+        await new Promise((r2) => setTimeout(r2, 800))
+      }
+      if (ready) {
+        harnessPort = port
+        log(`harness ready on port ${port}`)
+        sendStatus('running', `Harness 已启动（端口 ${port}）`)
+        loadHarnessView()
+        return
+      }
+      if (!harnessChild || (harnessChild.exitCode === null && !harnessChild.signalCode)) {
+        // 超时未就绪
+        lastErr = '启动超时'
+        try { harnessChild.kill('SIGKILL') } catch { /* ignore */ }
+      } else {
+        try { harnessChild.kill('SIGKILL') } catch { /* ignore */ }
+      }
+      harnessChild = null
+    }
+    sendStatus('error', `Harness 启动失败：${lastErr || '未知错误'}`)
+    log('harness start failed, last lines:', logTail.slice(-20).join('\n'))
+  } finally {
+    ensureRunning = false
   }
-  sendStatus('error', `Harness 启动失败：${lastErr || '未知错误'}`)
-  log('harness start failed, last lines:', logTail.slice(-20).join('\n'))
 }
 
 function stopOwnHarness() {
@@ -286,6 +323,10 @@ function switchTab(name) {
   if (v) v.webContents.focus()
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('tab-changed', name)
+  }
+  // 切到 Harness 标签时：若服务未就绪（未启动/启动失败），自动探测并启动
+  if (name === 'harness' && lastStatus !== 'running') {
+    ensureHarness()
   }
 }
 
@@ -396,6 +437,7 @@ ipcMain.handle('desk:get-state', () => ({
   status: lastStatus,
   detail: lastDetail,
   activeTab,
+  ...lastExtra,
 }))
 
 ipcMain.handle('desk:switch-tab', (_e, name) => {
@@ -413,6 +455,10 @@ ipcMain.handle('desk:restart-harness', async () => {
   }
   await ensureHarness()
   return { port: harnessPort }
+})
+
+ipcMain.handle('desk:copy-text', (_e, text) => {
+  if (typeof text === 'string' && text.length < 2000) clipboard.writeText(text)
 })
 
 ipcMain.handle('desk:get-log', () => logTail.slice(-40).join('\n'))

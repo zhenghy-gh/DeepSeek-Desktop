@@ -219,8 +219,64 @@ body {
 .overlay-detail {
   font-size: 12px;
   color: var(--fg-dim);
-  margin-bottom: 18px;
+  margin-bottom: 14px;
   word-break: break-all;
+}
+
+.install-box {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  text-align: left;
+}
+
+.install-box.hidden {
+  display: none;
+}
+
+.install-hint {
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-bottom: 8px;
+}
+
+.install-hint.small {
+  margin-bottom: 0;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.install-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.install-cmd code {
+  flex: 1;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--accent);
+  background: rgba(77, 107, 254, 0.1);
+  border-radius: 6px;
+  padding: 6px 10px;
+  word-break: break-all;
+  user-select: text;
+}
+
+.btn.small {
+  padding: 5px 12px;
+  font-size: 12px;
+  margin-left: 0;
+  flex-shrink: 0;
+}
+
+.overlay-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
 }
 
 .btn {
