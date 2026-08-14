@@ -115,7 +115,13 @@ body {
 }
 
 .tab-icon {
-  font-size: 14px;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.tab.active .tab-icon {
+  filter: drop-shadow(0 0 3px rgba(77, 107, 254, 0.5));
 }
 
 #status {
