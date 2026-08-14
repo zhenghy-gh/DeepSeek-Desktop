@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 将 dsh 运行时（@deepseek-ai/dsh 及其依赖）准备到 dsh-runtime/，
- * 供 electron-builder 作为 extraResources 打包进应用。
+ * 供 electron-builder afterPack 钩子打包进应用。
  *
  * 来源解析顺序：
  *   1. $DSH_DESKTOP_DSH 环境变量（显式指定）
@@ -9,8 +9,11 @@
  *   3. ~/.npm/_npx/<hash>/node_modules/.bin/dsh（取最新的）
  *   4. 临时目录 npm install @deepseek-ai/dsh（CI 等无本机 dsh 的环境）
  *
- * 复制后做轻量裁剪：*.map、*.md/README/CHANGELOG/LICENSE、
- * node-pty 非当前平台预编译、sharp-wasm32。
+ * 说明：.bin/dsh 在 mac/linux 是符号链接、Windows 是普通文件，
+ * 因此不依赖 realpath 深度，改为从入口向上查找包含
+ * node_modules/@deepseek-ai/dsh 的安装根目录。
+ *
+ * 步骤：定位安装根 → 平台化裁剪 → 复制到 dsh-runtime/。
  */
 import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -75,7 +78,24 @@ function installFresh(versionHint) {
     console.error('npm 安装 dsh 失败')
     process.exit(1)
   }
-  return fs.realpathSync(bin)
+  return bin
+}
+
+/**
+ * 从 dsh 入口向上查找安装根目录（包含 node_modules/@deepseek-ai/dsh 的最深目录）。
+ * 兼容符号链接（mac/linux）与普通文件（windows）两种 .bin/dsh。
+ */
+function findInstallRoot(bin) {
+  let dir = path.dirname(fs.realpathSync(bin))
+  let found = null
+  for (;;) {
+    const probe = path.join(dir, 'node_modules', '@deepseek-ai', 'dsh')
+    if (fs.existsSync(probe)) found = dir
+    const up = path.dirname(dir)
+    if (up === dir) break
+    dir = up
+  }
+  return found
 }
 
 function *walk(dir) {
@@ -96,6 +116,7 @@ function dirSize(root) {
   return total
 }
 
+/** 裁剪：sourcemap、文档、非当前平台的原生预编译 */
 function prune(root) {
   let removed = 0
   let removedBytes = 0
@@ -122,26 +143,38 @@ function prune(root) {
   return { removed, removedBytes }
 }
 
+// ---------- 定位来源 ----------
+
 let bin = findDshBin()
 let srcRoot = null
 if (bin) {
-  const realBin = fs.realpathSync(bin) // .../node_modules/@deepseek-ai/dsh/lib/bin.js
-  srcRoot = path.resolve(realBin, '..', '..', '..', '..', '..') // 回到安装根
-  if (!fs.existsSync(path.join(srcRoot, 'node_modules'))) srcRoot = null
+  try {
+    srcRoot = findInstallRoot(bin)
+  } catch { /* ignore */ }
 }
 if (!srcRoot) {
-  const versionHint = bin ? readDshVersion(path.resolve(bin, '..', '..')) : null
+  const versionHint = bin ? readDshVersion(path.dirname(bin)) : null
   bin = installFresh(versionHint)
-  const realBin = fs.realpathSync(bin)
-  srcRoot = path.resolve(realBin, '..', '..', '..', '..', '..')
+  srcRoot = findInstallRoot(bin)
+}
+if (!srcRoot || srcRoot === projectRoot) {
+  console.error(`无法定位 dsh 安装根目录（srcRoot=${srcRoot}）`)
+  process.exit(1)
 }
 
 console.log(`来源: ${srcRoot}`)
 console.log(`目标: ${destRoot}`)
+
 fs.rmSync(destRoot, { recursive: true, force: true })
 fs.mkdirSync(destRoot, { recursive: true })
 fs.cpSync(srcRoot, destRoot, { recursive: true })
 
+if (!fs.existsSync(path.join(destRoot, 'node_modules', '@deepseek-ai', 'dsh'))) {
+  console.error('复制后校验失败：dsh-runtime 缺少 @deepseek-ai/dsh')
+  process.exit(1)
+}
+
+// 只裁剪副本，绝不修改用户本机的 dsh 安装
 const { removed, removedBytes } = prune(destRoot)
 console.log(`裁剪: ${removed} 个文件，约 ${(removedBytes / 1024 / 1024).toFixed(1)} MB`)
 
