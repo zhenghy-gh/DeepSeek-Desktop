@@ -19,4 +19,12 @@ contextBridge.exposeInMainWorld('deskAPI', {
     ipcRenderer.on('tab-changed', h)
     return () => ipcRenderer.removeListener('tab-changed', h)
   },
+  updateCheck: () => ipcRenderer.invoke('desk:update-check'),
+  updateDownload: () => ipcRenderer.invoke('desk:update-download'),
+  updateInstall: () => ipcRenderer.invoke('desk:update-install'),
+  onUpdateStatus: (cb) => {
+    const h = (_e, payload) => cb(payload)
+    ipcRenderer.on('update-status', h)
+    return () => ipcRenderer.removeListener('update-status', h)
+  },
 })

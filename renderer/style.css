@@ -164,20 +164,39 @@ body {
   }
 }
 
-#openBrowser {
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-dim);
-  font-size: 13px;
-  cursor: pointer;
+.update-box {
+  margin-left: 6px;
 }
 
-#openBrowser:hover {
-  background: rgba(255, 255, 255, 0.08);
+.update-box.hidden {
+  display: none;
+}
+
+.update-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
   color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.update-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--accent);
+}
+
+.update-btn.warn {
+  border-color: rgba(210, 153, 34, 0.55);
+  color: var(--warn);
+  background: rgba(210, 153, 34, 0.12);
+}
+
+.update-btn.warn:hover {
+  background: rgba(210, 153, 34, 0.22);
 }
 
 /* ---------- 内容区（由主进程 WebContentsView 填充） ---------- */

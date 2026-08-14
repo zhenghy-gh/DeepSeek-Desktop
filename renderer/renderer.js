@@ -60,13 +60,6 @@ window.deskAPI.onStatus(({ status, detail, noDsh, installCmd, installHint }) => 
 
 // ---------- 工具栏按钮 ----------
 
-$('openBrowser').addEventListener('click', () => {
-  const url = state.activeTab === 'harness'
-    ? 'http://127.0.0.1:3080'
-    : 'https://chat.deepseek.com'
-  window.deskAPI.openExternal(url)
-})
-
 $('btn-retry').addEventListener('click', async () => {
   $('btn-retry').disabled = true
   setStatus('connecting', '正在重新启动 Harness…')
@@ -91,6 +84,57 @@ $('btn-copy').addEventListener('click', async () => {
     btn.textContent = prev
   }, 1500)
 })
+
+// ---------- 版本更新 ----------
+
+const updateState = { state: 'idle' }
+
+function renderUpdate(s) {
+  updateState.state = s.state
+  const box = $('updateBox')
+  const btn = $('updateBtn')
+  const v = (s.version || '').replace(/^v/, '')
+  switch (s.state) {
+    case 'available':
+      box.classList.remove('hidden')
+      btn.textContent = `发现新版本 v${v}`
+      btn.classList.add('warn')
+      break
+    case 'downloading':
+      box.classList.remove('hidden')
+      btn.textContent = `正在下载更新 ${s.progress || 0}%`
+      btn.classList.add('warn')
+      break
+    case 'downloaded':
+      box.classList.remove('hidden')
+      btn.textContent = '🔄 重启更新'
+      btn.classList.remove('warn')
+      break
+    case 'error':
+      box.classList.remove('hidden')
+      btn.textContent = s.error ? '更新失败，点击重试' : '更新失败'
+      btn.classList.add('warn')
+      break
+    default:
+      box.classList.add('hidden')
+  }
+}
+
+$('updateBtn').addEventListener('click', () => {
+  switch (updateState.state) {
+    case 'downloaded':
+      window.deskAPI.updateInstall()
+      break
+    case 'error':
+    case 'available':
+      window.deskAPI.updateDownload()
+      break
+    default:
+      break // downloading 中忽略点击
+  }
+})
+
+window.deskAPI.onUpdateStatus((s) => renderUpdate(s))
 
 // ---------- 初始化 ----------
 

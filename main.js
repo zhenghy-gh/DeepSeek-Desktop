@@ -1,11 +1,12 @@
 'use strict'
 
 const { app, BrowserWindow, WebContentsView, Menu, ipcMain, shell, clipboard } = require('electron')
-const { spawn, execFile } = require('node:child_process')
+const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const http = require('node:http')
+const { Updater } = require('./updater')
 
 const HARNESS_PROBE_PORTS = [3080, 3081, 3082, 3083]
 const CHAT_URL = 'https://chat.deepseek.com'
@@ -18,6 +19,7 @@ let mainWindow = null
 let chatView = null
 let harnessView = null
 let activeTab = 'chat'
+let updater = null
 let harnessChild = null
 let harnessOwned = false // true when we spawned the server ourselves
 let harnessPort = 3080
@@ -427,6 +429,18 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     ensureHarness()
   })
+
+  // 版本更新检测（启动延迟检查 + 每 6 小时）
+  if (!updater) {
+    updater = new Updater({
+      onStatus: (s) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('update-status', s)
+        }
+      },
+    })
+    updater.start()
+  }
 }
 
 // ---------- IPC ----------
@@ -463,6 +477,12 @@ ipcMain.handle('desk:copy-text', (_e, text) => {
 
 ipcMain.handle('desk:get-log', () => logTail.slice(-40).join('\n'))
 
+// ---------- 版本更新 ----------
+
+ipcMain.handle('desk:update-check', () => updater?.check(true))
+ipcMain.handle('desk:update-download', () => updater?.download())
+ipcMain.handle('desk:update-install', () => updater?.installAndRestart())
+
 // ---------- 菜单 ----------
 
 function buildMenu() {
@@ -489,6 +509,7 @@ function buildMenu() {
       label: '查看',
       submenu: [
         { label: '重新载入当前标签页', accelerator: 'CmdOrCtrl+R', click: () => activeView()?.webContents.reload() },
+        { label: '检查更新…', click: () => updater?.check(true) },
         { type: 'separator' },
         { role: 'togglefullscreen', label: '切换全屏' },
         { role: 'toggleDevTools', label: '开发者工具' },
