@@ -1,6 +1,6 @@
 {
   "name": "deepseek-desktop",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "DeepSeek 对话 + Harness 一体桌面应用：自动启动 Harness，一键进入对话与工作台",
   "main": "main.js",
   "author": "DeepSeek Desktop",

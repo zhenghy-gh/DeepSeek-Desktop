@@ -147,6 +147,36 @@ function prune(root) {
   return { removed, removedBytes }
 }
 
+/**
+ * 重写 node_modules/.bin 里的绝对路径符号链接为相对链接。
+ * npx 缓存安装的 bin 链接指向本机绝对路径（如 ~/.npm/_npx/<hash>/...），
+ * 打包分发到其他机器后目标不存在、链接失效；相对链接（../pkg/bin/x）随处可用。
+ */
+function rewriteBinLinks(root) {
+  const binDir = path.join(root, 'node_modules', '.bin')
+  if (!fs.existsSync(binDir)) return 0
+  let rewritten = 0
+  for (const entry of fs.readdirSync(binDir, { withFileTypes: true })) {
+    if (!entry.isSymbolicLink()) continue
+    const link = path.join(binDir, entry.name)
+    let target
+    try {
+      target = fs.readlinkSync(link)
+    } catch { /* ignore */ }
+    if (!target || !path.isAbsolute(target)) continue
+    // 绝对目标 → 解析出相对 node_modules 的包路径，再转成相对 .bin 的链接
+    const norm = path.normalize(target)
+    const idx = norm.indexOf(`${path.sep}node_modules${path.sep}`)
+    if (idx === -1) continue
+    const pkgRel = norm.slice(idx + 'node_modules/'.length)
+    const relative = path.join('..', pkgRel)
+    fs.rmSync(link, { force: true })
+    fs.symlinkSync(relative, link)
+    rewritten++
+  }
+  return rewritten
+}
+
 // ---------- 定位来源 ----------
 
 let bin = findDshBin()
@@ -181,6 +211,10 @@ if (!fs.existsSync(path.join(destRoot, 'node_modules', '@deepseek-ai', 'dsh'))) 
 // 只裁剪副本，绝不修改用户本机的 dsh 安装
 const { removed, removedBytes } = prune(destRoot)
 console.log(`裁剪: ${removed} 个文件，约 ${(removedBytes / 1024 / 1024).toFixed(1)} MB`)
+
+// 重写 .bin 绝对链接为相对链接（跨机器可用）
+const rewritten = rewriteBinLinks(destRoot)
+if (rewritten > 0) console.log(`重写 .bin 符号链接: ${rewritten} 个（绝对路径 → 相对路径）`)
 
 const sizeMb = (dirSize(destRoot) / 1024 / 1024).toFixed(0)
 console.log(`dsh-runtime 最终大小: ${sizeMb} MB（解压后，保留架构: ${keepArches.join(', ')}）`)

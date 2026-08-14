@@ -78,8 +78,12 @@ function findNode() {
 
 function findBundledDsh() {
   try {
-    const p = path.join(process.resourcesPath, 'dsh-runtime', 'node_modules', '.bin', 'dsh')
-    return fs.existsSync(p) ? p : null
+    const root = path.join(process.resourcesPath, 'dsh-runtime', 'node_modules')
+    // 优先用真实入口文件（不依赖 .bin 符号链接，跨机器可靠）
+    const real = path.join(root, '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+    if (fs.existsSync(real)) return real
+    const bin = path.join(root, '.bin', 'dsh')
+    return fs.existsSync(bin) ? bin : null
   } catch {
     return null
   }
