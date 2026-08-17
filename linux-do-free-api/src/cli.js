@@ -1,6 +1,8 @@
+import fs from 'node:fs';
 import { Store } from './store.js';
 import { AccountPool } from './pool.js';
 import { createServer } from './server.js';
+import { parseImport, importAccounts } from './import.js';
 
 const DATA_FILE = process.env.DATA_FILE || new URL('../data/accounts.json', import.meta.url).pathname;
 
@@ -106,6 +108,44 @@ switch (cmd) {
     });
     break;
   }
+  case 'import': {
+    const o = parseKv(rest);
+    const file = o.file;
+    const url = o.url;
+    const format = o.format || 'auto';
+    const dryRun = !!o['dry-run'];
+    const prefix = o['name-prefix'] || '';
+    if (!file && !url) {
+      console.error('用法: import --file <path> | --url <url> [--format auto|json|env|codex|oneapi|nextchat] [--dry-run] [--name-prefix <p>]');
+      process.exit(1);
+    }
+    let text;
+    if (url) {
+      const resp = await fetch(url);
+      text = await resp.text();
+    } else {
+      text = fs.readFileSync(file, 'utf8');
+    }
+    let candidates;
+    try {
+      candidates = parseImport(text, { format });
+    } catch (e) {
+      console.error('解析失败:', e.message);
+      process.exit(1);
+    }
+    if (candidates.length === 0) {
+      console.log('未从中解析到任何账号（检查格式或字段名 base_url / api_key）');
+      process.exit(0);
+    }
+    const { added, skipped } = importAccounts(store, candidates, { dryRun, prefix });
+    console.log(
+      `解析到 ${candidates.length} 个候选账号 → 新增 ${added.length}，跳过 ${skipped.length}` +
+        (dryRun ? '（dry-run，未写入）' : '')
+    );
+    console.table(added.map((a) => ({ name: a.name, baseUrl: a.baseUrl, models: (a.models || []).join(',') || '(空)', status: a.status || 'active' })));
+    if (skipped.length) console.log('已跳过（号池已存在）:', skipped.map((s) => s.name).join(', '));
+    break;
+  }
   default: {
     console.log(`linux-do-free-api 号池管理
 
@@ -113,6 +153,7 @@ switch (cmd) {
 
 命令:
   add      --base-url <url> --api-key <key> [--name <n>] [--models m1,m2] [--weight n]
+  import   --file <path> | --url <url> [--format auto|json|env|codex|oneapi|nextchat] [--dry-run] [--name-prefix <p>]
   list     列出号池
   remove   --id <id>
   enable   --id <id>        启用账号

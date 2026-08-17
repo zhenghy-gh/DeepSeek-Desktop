@@ -55,6 +55,7 @@ print(client.chat.completions.create(model="deepseek-chat", messages=[{"role":"u
 | 命令 | 说明 |
 | --- | --- |
 | `add --base-url --api-key [--name] [--models m1,m2] [--weight n]` | 录入账号 |
+| `import --file <path> \| --url <url> [--format auto\|json\|env\|codex\|oneapi\|nextchat] [--dry-run] [--name-prefix <p>]` | 从平台导出批量导入账号 |
 | `list` | 列出号池（表格） |
 | `remove --id <id>` | 删除账号 |
 | `enable --id <id>` / `disable --id <id>` | 启/禁用账号 |
@@ -62,6 +63,36 @@ print(client.chat.completions.create(model="deepseek-chat", messages=[{"role":"u
 | `serve` | 启动代理（同 `npm start`） |
 
 配置项（环境变量）：`PORT`（默认 3090）、`HOST`（默认 127.0.0.1）、`DATA_FILE`（号池文件路径）、`ADMIN_TOKEN`（`/admin/pool` 接口的保护令牌，不设置则本地开放）。
+
+## 从常用平台批量导入账号
+
+很多 OpenAI 兼容中转站 / 聚合平台（**Codex、One API / New API、NextChat、以及各中转站仪表盘的「导出配置」**）的账号信息都是同一套字段（`base_url` + `api_key` + `models`）。用 `import` 命令可以直接把它们批量录入号池，无需逐个 `add`。
+
+```bash
+# 从本地文件导入（自动识别 JSON / .env 格式）
+node src/cli.js import --file ./codex-export.json
+
+# 从远程 URL 拉取配置再导入
+node src/cli.js import --url https://my-dashboard.example.com/export
+
+# 先用 dry-run 预览会导入哪些、跳过哪些，确认无误再去掉 --dry-run
+node src/cli.js import --file ./export.json --dry-run
+
+# 指定格式 / 加名字前缀 / 区分来源
+node src/cli.js import --file ./nextchat.json --format nextchat --name-prefix codex
+```
+
+支持的格式（`--format`）：
+
+- `auto`（默认）：先按 `.env` 嗅探，否则按 JSON 解析；JSON 内部兼容数组、单个对象、`{ data: [...] }`、`{ openai: {...} }`（NextChat）等多种嵌套。
+- `json` / `codex` / `oneapi` / `nextchat`：统一走 JSON 归一化（字段名大小写 / 同义键都已容错：`base_url`/`endpoint`/`url`、`api_key`/`key`/`token`/`sk` 等）。
+- `env`：解析 `OPENAI_BASE_URL` + `OPENAI_API_KEY`（以及常见同义键）的 `.env` 文件。
+
+导入行为：
+
+- **去重**：号池里已存在相同 `api_key` 或 `(base_url + api_key)` 的账号会被跳过，不会重复录入。
+- **模型**：导入时若带 `models` 则照单全收；不带则留空（代理会匹配该账号支持的任何模型）。
+- 预览：`--dry-run` 只打印将要新增的账号，不写入文件。
 
 ## 工作原理
 
