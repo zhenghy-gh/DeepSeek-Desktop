@@ -1,0 +1,10 @@
+[
+  {
+    "name": "示例-某某中转站",
+    "baseUrl": "https://your-relay.example.com",
+    "apiKey": "sk-xxxxxxxxxxxxxxxx",
+    "models": ["deepseek-chat", "gpt-4o-mini", "claude-3-5-haiku"],
+    "weight": 1,
+    "cooldownMs": 86400000
+  }
+]

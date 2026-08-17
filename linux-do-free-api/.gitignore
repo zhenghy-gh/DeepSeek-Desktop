@@ -1,0 +1,9 @@
+# 运行时号池（含真实 API Key，禁止提交）
+data/accounts.json
+data/*.json
+
+# 依赖与日志
+node_modules/
+*.log
+.env
+.env.local
