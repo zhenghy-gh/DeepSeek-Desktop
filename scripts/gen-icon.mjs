@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * 生成 1024x1024 应用图标（纯 Node 实现，无外部依赖）：
- * 深蓝渐变圆角方块 + 白色对话气泡 + 蓝色闪电。
- * 输出 assets/icon-master.png，再由 make-icns.sh 转成 .icns。
+ *  - 满幅对角渐变背景（macOS 自动圆角，无需透明底）
+ *  - 中央白色 DeepSeek 鲸鱼（直接从官方 chat.svg 提取矢量 path 光栅化）
+ *  - 顶部高光 + 气泡装饰
+ * 输出 assets/icon-master.png 和 assets/icon-512.png，再由 make-icns.sh 转 icns。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -11,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const assetsDir = path.join(__dirname, '..', 'assets')
+const whaleSvg = path.join(__dirname, '..', 'renderer', 'icons', 'chat.svg')
 
 // ---------- PNG 编码 ----------
 const CRC_TABLE = (() => {
@@ -43,38 +46,146 @@ function encodePNG(size, rgba) {
   const ihdr = Buffer.alloc(13)
   ihdr.writeUInt32BE(size, 0)
   ihdr.writeUInt32BE(size, 4)
-  ihdr[8] = 8 // bit depth
-  ihdr[9] = 6 // color type RGBA
+  ihdr[8] = 8
+  ihdr[9] = 6
   const raw = Buffer.alloc((size * 4 + 1) * size)
   for (let y = 0; y < size; y++) {
-    raw[y * (size * 4 + 1)] = 0 // filter: none
+    raw[y * (size * 4 + 1)] = 0
     rgba.copy(raw, y * (size * 4 + 1) + 1, y * size * 4, (y + 1) * size * 4)
   }
   const idat = zlib.deflateSync(raw, { level: 9 })
   return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))])
 }
 
-// ---------- 绘制 ----------
+// ---------- SVG path 解析与光栅化 ----------
 
-// SDF：圆角矩形距离
-function roundedRectDist(x, y, cx, cy, halfW, halfH, r) {
-  const dx = Math.max(Math.abs(x - cx) - (halfW - r), 0)
-  const dy = Math.max(Math.abs(y - cy) - (halfH - r), 0)
-  return Math.hypot(dx, dy) - r
-}
-
-// 点在多边形内（射线法）
-function inPolygon(x, y, pts) {
-  let inside = false
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const [xi, yi] = pts[i]
-    const [xj, yj] = pts[j]
-    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside
+function parsePath(d) {
+  const tokens = d.match(/[MmLlCcHhVvZz]|-?\d*\.?\d+(?:[eE][+-]?\d+)?/g) || []
+  const commands = []
+  let i = 0
+  let last = null
+  while (i < tokens.length) {
+    let cmd = tokens[i]
+    if (!/[A-Za-z]/.test(cmd)) {
+      if (!last) break
+      cmd = last // 隐式重复命令
+    } else {
+      i++
+    }
+    if (!/[A-Za-z]/.test(cmd)) break
+    const params = []
+    while (i < tokens.length && !/[A-Za-z]/.test(tokens[i])) {
+      params.push(parseFloat(tokens[i++]))
+    }
+    commands.push({ cmd, params })
+    if (cmd !== 'z' && cmd !== 'Z') last = cmd
   }
-  return inside
+  return commands
 }
 
-// 颜色混合
+/** 解析为折线子路径列表（每段 = [x,y] 点数组，闭合） */
+function pathToPolylines(commands, flat = 0.12) {
+  const polylines = []
+  let current = []
+  let cx = 0
+  let cy = 0
+  let sx = 0
+  let sy = 0
+  const rel = (cmd) => cmd === cmd.toLowerCase() && cmd !== 'z' && cmd !== 'Z'
+
+  const emitPoint = (x, y) => {
+    current.push([x, y])
+    cx = x
+    cy = y
+  }
+
+  const subdivide = (p0, c1, c2, p1) => {
+    // 三次贝塞尔自适应细分（平坦阈值 flat，50 单位 viewBox）
+    const d1 = Math.hypot(c1[0] - p0[0], c1[1] - p0[1])
+    const d2 = Math.hypot(c2[0] - p1[0], c2[1] - p1[1])
+    const d3 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+    if (d1 + d2 + d3 < flat || current.length > 40000) {
+      emitPoint(p1[0], p1[1])
+      return
+    }
+    const m = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+    const p01 = m(p0, c1)
+    const p12 = m(c1, c2)
+    const p23 = m(c2, p1)
+    const p012 = m(p01, p12)
+    const p123 = m(p12, p23)
+    const p0123 = m(p012, p123)
+    subdivide(p0, p01, p012, p0123)
+    subdivide(p0123, p123, p23, p1)
+  }
+
+  for (const { cmd, params } of commands) {
+    const r = rel(cmd)
+    const u = cmd.toUpperCase()
+    if (u === 'M') {
+      if (current.length) polylines.push(current)
+      current = []
+      sx = r ? cx + params[0] : params[0]
+      sy = r ? cy + params[1] : params[1]
+      emitPoint(sx, sy)
+    } else if (u === 'C') {
+      const p0 = [cx, cy]
+      const c1 = [r ? cx + params[0] : params[0], r ? cy + params[1] : params[1]]
+      const c2 = [r ? cx + params[2] : params[2], r ? cy + params[3] : params[3]]
+      const p1 = [r ? cx + params[4] : params[4], r ? cy + params[5] : params[5]]
+      subdivide(p0, c1, c2, p1)
+    } else if (u === 'L') {
+      emitPoint(r ? cx + params[0] : params[0], r ? cy + params[1] : params[1])
+    } else if (u === 'H') {
+      emitPoint(r ? cx + params[0] : params[0], cy)
+    } else if (u === 'V') {
+      emitPoint(cx, r ? cy + params[0] : params[0])
+    } else if (u === 'Z') {
+      if (current.length) {
+        current.push([sx, sy])
+        polylines.push(current)
+        current = []
+      }
+      cx = sx
+      cy = sy
+    }
+  }
+  if (current.length) polylines.push(current)
+  return polylines.filter((p) => p.length >= 2)
+}
+
+/** 扫描线 even-odd 填充折线集 → 填充区间 [y, x0, x1] 列表 */
+function scanFill(polylines, size, scale, ox, oy) {
+  const edges = []
+  for (const poly of polylines) {
+    for (let i = 0; i < poly.length - 1; i++) {
+      const [ax, ay] = poly[i]
+      const [bx, by] = poly[i + 1]
+      edges.push([ax * scale + ox, ay * scale + oy, bx * scale + ox, by * scale + oy])
+    }
+  }
+  const spans = []
+  for (let y = 0; y < size; y++) {
+    const yf = y + 0.5
+    const xs = []
+    for (const [x0, y0, x1, y1] of edges) {
+      if (y0 === y1) continue
+      if ((y0 <= yf && yf < y1) || (y1 <= yf && yf < y0)) {
+        xs.push(x0 + ((yf - y0) * (x1 - x0)) / (y1 - y0))
+      }
+    }
+    xs.sort((a, b) => a - b)
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      const a = Math.max(0, Math.round(xs[i]))
+      const b = Math.min(size - 1, Math.round(xs[i + 1]))
+      if (a <= b) spans.push([y, a, b])
+    }
+  }
+  return spans
+}
+
+// ---------- 图标绘制 ----------
+
 function lerp(a, b, t) {
   return a + (b - a) * t
 }
@@ -82,61 +193,77 @@ function lerp(a, b, t) {
 function drawIcon(size) {
   const rgba = Buffer.alloc(size * size * 4)
 
-  // 闪电多边形（相对气泡坐标）
-  const bolt = [
-    [0.36, 0.30], [0.62, 0.30], [0.50, 0.47], [0.66, 0.47],
-    [0.34, 0.78], [0.44, 0.56], [0.28, 0.56],
-  ]
-
+  // 满幅背景：对角渐变 + 顶部高光 + 底部角落氛围光
   for (let y = 0; y < size; y++) {
     const ny = y / size
     for (let x = 0; x < size; x++) {
       const nx = x / size
       const i = (y * size + x) * 4
-      let r = 0, g = 0, b = 0, a = 0
-
-      // 背景：圆角方块 + 对角渐变
-      const d = roundedRectDist(x + 0.5, y + 0.5, size / 2, size / 2, size * 0.5 - 8, size * 0.5 - 8, 232 * (size / 1024))
-      if (d < 0) {
-        const t = (nx + ny) / 2
-        r = lerp(0x4d, 0x0b, t)
-        g = lerp(0x6b, 0x1e, t)
-        b = lerp(0xfe, 0x4d, t)
-        a = 1
-        // 顶部高光
-        const glow = Math.max(0, 1 - ny * 3.2)
-        r = lerp(r, 0x6f, glow * 0.35)
-        g = lerp(g, 0x8b, glow * 0.35)
-        b = lerp(b, 0xff, glow * 0.35)
-      }
-
-      // 气泡（白色圆角矩形 + 小尾巴）
-      if (a > 0) {
-        const bd = roundedRectDist(x + 0.5, y + 0.5, size / 2, size / 2 - 18 * (size / 1024), 268 * (size / 1024), 216 * (size / 1024), 84 * (size / 1024))
-        const tail = inPolygon(x + 0.5, y + 0.5, [
-          [size / 2 - 110 * (size / 1024), size / 2 + 172 * (size / 1024)],
-          [size / 2 - 18 * (size / 1024), size / 2 + 172 * (size / 1024)],
-          [size / 2 - 118 * (size / 1024), size / 2 + 262 * (size / 1024)],
-        ])
-        if (bd < 0 || tail) {
-          r = 0xf5; g = 0xf7; b = 0xfb
-        } else {
-          // 气泡内部：闪电
-          const bx0 = size / 2 - 196 * (size / 1024)
-          const by0 = size / 2 - 220 * (size / 1024)
-          const pts = bolt.map(([px, py]) => [bx0 + px * 392 * (size / 1024), by0 + py * 300 * (size / 1024)])
-          if (inPolygon(x + 0.5, y + 0.5, pts)) {
-            r = 0x4d; g = 0x6b; b = 0xfe
-          }
-        }
-      }
-
+      const t = nx * 0.55 + ny * 0.45
+      let r = lerp(0x4d, 0x0b, t)
+      let g = lerp(0x6b, 0x1e, t)
+      let b = lerp(0xfe, 0x4d, t)
+      const glow = Math.max(0, 1 - ny * 3.4)
+      r = lerp(r, 0x7c, glow * 0.5)
+      g = lerp(g, 0x9d, glow * 0.5)
+      b = lerp(b, 0xff, glow * 0.5)
+      const corner = Math.max(0, 1 - Math.hypot(nx - 0.9, ny - 0.95) * 2.4)
+      r = lerp(r, 0x5a, corner * 0.25)
+      g = lerp(g, 0x8c, corner * 0.25)
+      b = lerp(b, 0xff, corner * 0.25)
       rgba[i] = Math.round(r)
       rgba[i + 1] = Math.round(g)
       rgba[i + 2] = Math.round(b)
-      rgba[i + 3] = Math.round(a * 255)
+      rgba[i + 3] = 255
     }
   }
+
+  // 气泡装饰（半透明圆环）
+  const bubbles = [
+    { cx: 0.76, cy: 0.24, r: 0.085 },
+    { cx: 0.86, cy: 0.38, r: 0.05 },
+    { cx: 0.2, cy: 0.8, r: 0.06 },
+    { cx: 0.12, cy: 0.62, r: 0.035 },
+  ]
+  for (const { cx, cy, r } of bubbles) {
+    const px = cx * size
+    const py = cy * size
+    const pr = r * size
+    for (let y = Math.floor(py - pr - 4); y <= py + pr + 4; y++) {
+      for (let x = Math.floor(px - pr - 4); x <= px + pr + 4; x++) {
+        if (x < 0 || y < 0 || x >= size || y >= size) continue
+        const d = Math.abs(Math.hypot(x - px, y - py) - pr)
+        if (d <= 4) {
+          const a = Math.max(0, 1 - d / 4) * 0.5
+          const i = (y * size + x) * 4
+          rgba[i] = Math.round(rgba[i] * (1 - a) + 255 * a)
+          rgba[i + 1] = Math.round(rgba[i + 1] * (1 - a) + 255 * a)
+          rgba[i + 2] = Math.round(rgba[i + 2] * (1 - a) + 255 * a)
+        }
+      }
+    }
+  }
+
+  // 中央白色鲸鱼
+  const svg = fs.readFileSync(whaleSvg, 'utf8')
+  const d = svg.match(/\bd="([^"]+)"/)?.[1]
+  if (!d) throw new Error('无法从 chat.svg 提取鲸鱼 path')
+  const commands = parsePath(d)
+  const polylines = pathToPolylines(commands)
+  const scale = (size * 0.74) / 50
+  const ox = (size - 50 * scale) / 2
+  const oy = (size - 50 * scale) / 2 - size * 0.02
+  const spans = scanFill(polylines, size, scale, ox, oy)
+  for (const [y, a, b] of spans) {
+    for (let x = a; x <= b; x++) {
+      const i = (y * size + x) * 4
+      rgba[i] = 0xff
+      rgba[i + 1] = 0xff
+      rgba[i + 2] = 0xff
+      rgba[i + 3] = 255
+    }
+  }
+
   return rgba
 }
 
