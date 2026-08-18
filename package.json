@@ -9,9 +9,10 @@
     "start": "electron .",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
     "icon": "node scripts/gen-icon.mjs && bash scripts/make-icns.sh",
-    "dist:mac": "npm run prepare:runtime && electron-builder --mac dmg zip",
-    "dist:win": "npm run prepare:runtime && electron-builder --win nsis",
-    "dist:linux": "npm run prepare:runtime && electron-builder --linux AppImage deb",
+    "clean:dist": "node scripts/clean-dist.mjs",
+    "dist:mac": "npm run prepare:runtime && npm run clean:dist && electron-builder --mac dmg zip",
+    "dist:win": "npm run prepare:runtime && npm run clean:dist && electron-builder --win nsis",
+    "dist:linux": "npm run prepare:runtime && npm run clean:dist && electron-builder --linux AppImage deb",
     "dist": "npm run dist:mac"
   },
   "devDependencies": {
