@@ -1,7 +1,7 @@
 'use strict'
 
 const { app, BrowserWindow, WebContentsView, Menu, ipcMain, shell, clipboard } = require('electron')
-const { spawn } = require('node:child_process')
+const { spawn, execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -53,28 +53,76 @@ function sendStatus(status, detail, extra = {}) {
 
 // ---------- Node / dsh 定位 ----------
 
-function findNode() {
-  const candidates = []
-  if (process.env.DSH_DESKTOP_NODE) candidates.push(process.env.DSH_DESKTOP_NODE)
-  candidates.push('/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node')
+// dsh（dsh-app-boot）在入口顶层 `import { parseEnv } from 'node:util'`，
+// 而 util.parseEnv 是 Node 20.12.0 才引入的 API，因此 Harness 只能跑在 ≥ 20.12 的
+// Node 上；低于此版本的 node（如 nvm 里的 v16）会启动即崩溃。
+const MIN_NODE = [20, 12, 0]
+
+function cmpVer(a, b) {
+  for (let i = 0; i < 3; i++) {
+    const d = (a[i] || 0) - (b[i] || 0)
+    if (d) return d
+  }
+  return 0
+}
+
+function geVer(a, min) {
+  return cmpVer(a, min) >= 0
+}
+
+// 探测某个 node 可执行文件的版本号；不是 node / 启动超时等异常返回 null
+function nodeVersionAt(p) {
+  try {
+    const out = execFileSync(p, ['-p', 'process.versions.node'], {
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
+      .toString()
+      .trim()
+    const m = out.match(/(\d+)\.(\d+)\.(\d+)/)
+    if (!m) return null
+    return [Number(m[1]), Number(m[2]), Number(m[3])]
+  } catch {
+    return null
+  }
+}
+
+async function findNode() {
+  // 显式覆盖优先：用户指定了 node 就直接信任（不再卡版本门槛，便于调试）
+  if (process.env.DSH_DESKTOP_NODE) {
+    try {
+      if (fs.existsSync(process.env.DSH_DESKTOP_NODE)) return process.env.DSH_DESKTOP_NODE
+    } catch { /* ignore */ }
+  }
+  const candidates = ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']
   try {
     const nvmDir = path.join(os.homedir(), '.nvm', 'versions', 'node')
     if (fs.existsSync(nvmDir)) {
-      const versions = fs.readdirSync(nvmDir).sort((a, b) => {
-        const va = a.split('.').map(Number)
-        const vb = b.split('.').map(Number)
-        for (let i = 0; i < 3; i++) return (vb[i] || 0) - (va[i] || 0)
-        return 0
-      })
-      for (const v of versions) candidates.push(path.join(nvmDir, v, 'bin', 'node'))
+      // 枚举 nvm 实际安装的 node（PATH 中的 "*" 通配不会展开）
+      for (const v of fs.readdirSync(nvmDir)) {
+        candidates.push(path.join(nvmDir, v, 'bin', 'node'))
+      }
     }
   } catch { /* ignore */ }
+  let best = null
+  let bestVer = null
   for (const c of candidates) {
     try {
-      if (fs.existsSync(c)) return c
-    } catch { /* ignore */ }
+      if (!fs.existsSync(c)) continue
+    } catch {
+      continue
+    }
+    const ver = nodeVersionAt(c)
+    // 跳过不满足 dsh 最低版本要求的 node（如 v16），避免「启动即崩溃」
+    if (!ver || !geVer(ver, MIN_NODE)) continue
+    if (!bestVer || cmpVer(ver, bestVer) > 0) {
+      best = c
+      bestVer = ver
+    }
   }
-  return null
+  // 没有任何兼容的系统 node 时返回 null → 调用方回退到 Electron 自带 Node（≥ 20.12）
+  return best
 }
 
 function findBundledDsh() {
@@ -120,19 +168,25 @@ function findNpxDsh() {
   }
 }
 
-function extendedEnv() {
+function extendedEnv(preferNodeDir) {
   const extra = [
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/usr/bin',
     '/bin',
   ]
-  // 扫描 nvm 实际安装的 node bin 目录。注意：PATH 中的 "*" 通配不会被展开，
-  // 必须枚举真实目录，否则 dsh 子进程内部 spawn node/shell 时找不到 node。
+  // 枚举 nvm 实际安装的 node bin 目录，新版本优先；dsh 内部 spawn 的 `node`
+  // 也按此顺序解析，避免回落到过旧的 node（如 v16）。
   try {
     const nvmDir = path.join(os.homedir(), '.nvm', 'versions', 'node')
     if (fs.existsSync(nvmDir)) {
-      for (const v of fs.readdirSync(nvmDir)) {
+      const vers = fs.readdirSync(nvmDir).sort((a, b) => {
+        const va = a.split('.').map(Number)
+        const vb = b.split('.').map(Number)
+        for (let i = 0; i < 3; i++) if ((vb[i] || 0) !== (va[i] || 0)) return (vb[i] || 0) - (va[i] || 0)
+        return 0
+      })
+      for (const v of vers) {
         const bin = path.join(nvmDir, v, 'bin')
         try {
           if (fs.statSync(bin).isDirectory()) extra.push(bin)
@@ -143,6 +197,8 @@ function extendedEnv() {
   const merged = (process.env.PATH || '')
     .split(path.delimiter)
     .filter(Boolean)
+  // 把「选定的 node 所在目录」放到 PATH 最前，确保 dsh 及其子进程用的都是同一个新版本 node
+  if (preferNodeDir && !merged.includes(preferNodeDir)) merged.unshift(preferNodeDir)
   for (const d of extra) if (d && !merged.includes(d)) merged.push(d)
   return { ...process.env, PATH: merged.join(path.delimiter) }
 }
@@ -191,7 +247,9 @@ async function waitPortFree(port, timeoutMs = 5000) {
 
 function spawnHarness(nodePath, dshScript, port, viaPath = false) {
   dshOutputBuffer = '' // 新一轮启动，清空上次的输出缓冲
-  const env = extendedEnv()
+  // 把选定 node 的目录插到 PATH 最前，确保 dsh 内部 spawn 的 node 也是同一个新版本
+  const nodeDir = nodePath && nodePath !== process.execPath ? path.dirname(nodePath) : null
+  const env = extendedEnv(nodeDir)
   // 清理会干扰 dsh 子进程 Node 的环境变量：
   //  - NODE_OPTIONS 可能含仅特定 node 版本支持的 flag（如 --use-system-ca），
   //    透传后 dsh 的 node 一启动就 exit 1 且无任何输出，极难排查。
@@ -273,7 +331,7 @@ async function ensureHarness(force = false) {
       log('force restart: 跳过复用探测，准备拉起新实例')
     }
 
-    const nodePath = findNode() || process.execPath // 兜底：Electron 自带 Node
+    const nodePath = (await findNode()) || process.execPath // 兜底：Electron 自带 Node
     let dshScript = findBundledDsh()
     let viaPath = false
     if (!dshScript) {
