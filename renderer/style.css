@@ -294,6 +294,76 @@ body {
   word-break: break-word;
 }
 
+.overlay-diagnostics {
+  text-align: left;
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+}
+
+.overlay-diagnostics.hidden {
+  display: none;
+}
+
+.diag-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+  align-items: flex-start;
+}
+
+.diag-label {
+  color: var(--fg-dim);
+  flex-shrink: 0;
+  min-width: 56px;
+}
+
+.diag-label.warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.diag-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg);
+  word-break: break-all;
+}
+
+.diag-details {
+  margin-top: 6px;
+  cursor: pointer;
+}
+
+.diag-details summary {
+  color: var(--accent);
+  font-size: 11px;
+  user-select: none;
+}
+
+.diag-details[open] {
+  margin-top: 8px;
+}
+
+.diag-pre {
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #c9d4e3;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .install-box {
   background: rgba(255, 255, 255, 0.04);
   border: 1px dashed var(--border);

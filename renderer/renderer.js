@@ -46,13 +46,39 @@ function setStatus(status, detail, extra = {}) {
   if (status === 'error') {
     overlay.classList.remove('hidden')
     $('overlay-detail').textContent = detail || '未知错误'
-    // 展示 dsh 的真实错误（stderr 末尾），便于定位启动失败原因
+    // 展示 dsh 的真实错误（stdout+stderr 末尾），便于定位启动失败原因
     const errEl = $('overlay-dsherr')
-    if (extra.dshErr) {
-      errEl.textContent = extra.dshErr
+    // 兼容旧字段 dshErr 与新字段 diagnostics
+    const diag = extra.diagnostics
+    const dshErr = extra.dshErr
+    if (dshErr) {
+      errEl.textContent = dshErr
+      errEl.classList.remove('hidden')
+    } else if (diag && diag.outputTail && diag.outputTail !== '(无输出)') {
+      errEl.textContent = diag.outputTail
       errEl.classList.remove('hidden')
     } else {
       errEl.classList.add('hidden')
+    }
+    // 展示诊断信息（node/dsh 路径、启动命令、Electron-as-node 警示、PATH/输出）
+    const diagBox = $('overlay-diagnostics')
+    if (diag) {
+      diagBox.classList.remove('hidden')
+      $('diag-node').textContent = diag.nodePath || '-'
+      $('diag-dsh').textContent = diag.dshScript || '-'
+      $('diag-cmd').textContent = diag.command || '-'
+      if (diag.electronAsNode) $('diag-electron-row').classList.remove('hidden')
+      else $('diag-electron-row').classList.add('hidden')
+      const outLines = [
+        '--- 启动输出 ---',
+        diag.outputTail || '(无输出)',
+        '',
+        '--- PATH (前6) ---',
+        diag.pathHead || '-',
+      ]
+      $('diag-output').textContent = outLines.join('\n')
+    } else {
+      diagBox.classList.add('hidden')
     }
     // 未安装 dsh → 展示安装命令
     const box = $('install-box')
@@ -68,8 +94,8 @@ function setStatus(status, detail, extra = {}) {
   }
 }
 
-window.deskAPI.onStatus(({ status, detail, noDsh, installCmd, installHint, dshErr }) => {
-  setStatus(status, detail, { noDsh, installCmd, installHint, dshErr })
+window.deskAPI.onStatus(({ status, detail, noDsh, installCmd, installHint, dshErr, diagnostics }) => {
+  setStatus(status, detail, { noDsh, installCmd, installHint, dshErr, diagnostics })
 })
 
 // ---------- 工具栏按钮 ----------

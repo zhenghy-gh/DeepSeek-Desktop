@@ -28,7 +28,7 @@ let lastStatus = 'connecting'
 let lastDetail = '正在检查 Harness…'
 let lastExtra = {}
 let logTail = [] // last lines of dsh output for diagnostics
-let dshErrBuffer = '' // 累积 dsh 的 stderr，用于把真实启动错误暴露给用户
+let dshOutputBuffer = '' // 累积 dsh 的 stdout+stderr，用于把真实启动错误暴露给用户
 
 function log(...args) {
   const line = `[desktop ${new Date().toISOString()}] ${args.join(' ')}`
@@ -190,29 +190,45 @@ async function waitPortFree(port, timeoutMs = 5000) {
 }
 
 function spawnHarness(nodePath, dshScript, port, viaPath = false) {
-  dshErrBuffer = '' // 新一轮启动，清空上次的错误缓冲
+  dshOutputBuffer = '' // 新一轮启动，清空上次的输出缓冲
   const env = extendedEnv()
+  // 清理会干扰 dsh 子进程 Node 的环境变量：
+  //  - NODE_OPTIONS 可能含仅特定 node 版本支持的 flag（如 --use-system-ca），
+  //    透传后 dsh 的 node 一启动就 exit 1 且无任何输出，极难排查。
+  //  - 非 Electron 兜底时，必须剥掉 ELECTRON_RUN_AS_NODE，否则会污染系统 node。
+  delete env.NODE_OPTIONS
+  if (nodePath !== process.execPath) {
+    delete env.ELECTRON_RUN_AS_NODE
+  }
   const args = nodePath
     ? [dshScript, 'web', '--port', String(port)]
     : ['web', '--port', String(port)]
+  // 用 Electron 自身二进制兜底跑 dsh 时，dsh 的 cordis HMR 插件要求 --expose-internals，
+  // 否则启动即崩溃（exit 1，无有用输出）。该 flag 必须位于脚本名之前。
+  if (nodePath === process.execPath) {
+    args.unshift('--expose-internals')
+  }
   const bin = nodePath || dshScript
-  // 无系统 node 时用 Electron 自带的 Node（ELECTRON_RUN_AS_NODE）；pty.node 是 N-API，兼容
+  // 无系统 node 时才用 Electron 自带的 Node 兜底；pty.node 是 N-API，但 Electron-as-node 在加载某些原生依赖时仍可能异常
   if (nodePath === process.execPath) env.ELECTRON_RUN_AS_NODE = '1'
-  log(`spawning harness: ${bin} ${args.join(' ')}`)
+  const commandStr = `${bin} ${args.join(' ')}`
+  log(`spawning harness: ${commandStr}`)
   const child = spawn(bin, args, {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  child.stdout.on('data', (d) => log(`[dsh] ${String(d).trimEnd()}`))
-  child.stderr.on('data', (d) => {
+  const appendOutput = (prefix, d) => {
     const s = String(d).trimEnd()
-    log(`[dsh:err] ${s}`)
-    dshErrBuffer += s + '\n'
-    if (dshErrBuffer.length > 2000) dshErrBuffer = dshErrBuffer.slice(-2000)
-  })
+    log(`[${prefix}] ${s}`)
+    dshOutputBuffer += s + '\n'
+    if (dshOutputBuffer.length > 4000) dshOutputBuffer = dshOutputBuffer.slice(-4000)
+  }
+  child.stdout.on('data', (d) => appendOutput('dsh', d))
+  child.stderr.on('data', (d) => appendOutput('dsh:err', d))
   child.on('error', (err) => {
-    // 通过 PATH 调 dsh 但命令不存在（未安装）
     log(`dsh spawn error: ${err.message}`)
+    dshOutputBuffer += `[spawn error] ${err.code}: ${err.message}\n`
+    // 通过 PATH 调 dsh 但命令不存在（未安装）
     if (viaPath && err.code === 'ENOENT') {
       sendStatus('error', '未检测到 dsh 运行时，请先安装', {
         noDsh: true,
@@ -278,6 +294,10 @@ async function ensureHarness(force = false) {
       })
       return
     }
+    if (nodePath === process.execPath) {
+      // 有内置 dsh 但本机没有 node，Electron-as-node 兜底风险较高，先提示用户安装 node
+      log('fallback to electron binary as node')
+    }
 
     harnessOwned = true
     let lastErr = null
@@ -328,9 +348,20 @@ async function ensureHarness(force = false) {
       harnessChild = null
     }
     if (myGen !== harnessGen) return
-    const dshErrTail = dshErrBuffer.trim().split('\n').slice(-6).join('\n').slice(0, 300)
-    sendStatus('error', `Harness 启动失败：${lastErr || '未知错误'}`, { dshErr: dshErrTail })
-    log('harness start failed, last lines:', logTail.slice(-20).join('\n'))
+    const dshOutputTail = dshOutputBuffer.trim().split('\n').slice(-8).join('\n').slice(0, 450)
+    const pathHead = (extendedEnv().PATH || '').split(path.delimiter).slice(0, 6).join('\n')
+    const commandStr = `${nodePath || '(no node)'} ${dshScript || '(no dsh)'} web --port <port>`
+    const diagnostics = {
+      summary: lastErr || '未知错误',
+      nodePath: nodePath || 'not found',
+      dshScript: dshScript || 'not found',
+      command: commandStr,
+      electronAsNode: nodePath === process.execPath,
+      pathHead,
+      outputTail: dshOutputTail || '(无输出)',
+    }
+    sendStatus('error', `Harness 启动失败：${lastErr || '未知错误'}`, { diagnostics })
+    log('harness start failed, diagnostics:', JSON.stringify(diagnostics))
   } finally {
     if (myGen === harnessGen) ensureRunning = false
   }

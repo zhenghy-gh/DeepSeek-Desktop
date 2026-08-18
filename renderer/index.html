@@ -40,6 +40,16 @@
         <div class="overlay-title">Harness 不可用</div>
         <div id="overlay-detail" class="overlay-detail">正在检查…</div>
         <pre id="overlay-dsherr" class="overlay-dsherr hidden"></pre>
+        <div id="overlay-diagnostics" class="overlay-diagnostics hidden">
+          <div class="diag-row"><span class="diag-label">node:</span><code id="diag-node" class="diag-code"></code></div>
+          <div class="diag-row"><span class="diag-label">dsh:</span><code id="diag-dsh" class="diag-code"></code></div>
+          <div class="diag-row"><span class="diag-label">command:</span><code id="diag-cmd" class="diag-code"></code></div>
+          <div class="diag-row hidden" id="diag-electron-row"><span class="diag-label warn">⚠ 正在用 Electron 自带 Node 兜底</span></div>
+          <details class="diag-details">
+            <summary>启动输出 / PATH</summary>
+            <pre id="diag-output" class="diag-pre"></pre>
+          </details>
+        </div>
         <div id="install-box" class="install-box hidden">
           <div class="install-hint">未检测到 dsh 运行时，请先安装：</div>
           <div class="install-cmd">
