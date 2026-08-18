@@ -199,9 +199,18 @@ if (!srcRoot || srcRoot === projectRoot) {
 console.log(`来源: ${srcRoot}`)
 console.log(`目标: ${destRoot}`)
 
-fs.rmSync(destRoot, { recursive: true, force: true })
-fs.mkdirSync(destRoot, { recursive: true })
-fs.cpSync(srcRoot, destRoot, { recursive: true })
+const destDshPkg = path.join(destRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+const srcVer = readDshVersion(srcRoot)
+const destVer = readDshVersion(destRoot)
+const needRefresh = !fs.existsSync(destDshPkg) || (srcVer && destVer && srcVer !== destVer)
+if (needRefresh) {
+  console.log('dsh-runtime 缺失或版本不一致，重建中…')
+  fs.rmSync(destRoot, { recursive: true, force: true })
+  fs.mkdirSync(destRoot, { recursive: true })
+  fs.cpSync(srcRoot, destRoot, { recursive: true })
+} else {
+  console.log(`dsh-runtime 已存在且版本一致（${destVer}），跳过重建`)
+}
 
 if (!fs.existsSync(path.join(destRoot, 'node_modules', '@deepseek-ai', 'dsh'))) {
   console.error('复制后校验失败：dsh-runtime 缺少 @deepseek-ai/dsh')

@@ -26,6 +26,7 @@
     <div id="status">
       <span id="statusDot" class="dot"></span>
       <span id="statusText">正在连接 Harness…</span>
+      <button id="btnRestartTop" class="restart-top hidden">重新启动</button>
       <span id="updateBox" class="update-box hidden">
         <button id="updateBtn" class="update-btn"></button>
       </span>
@@ -38,6 +39,7 @@
       <div class="overlay-card">
         <div class="overlay-title">Harness 不可用</div>
         <div id="overlay-detail" class="overlay-detail">正在检查…</div>
+        <pre id="overlay-dsherr" class="overlay-dsherr hidden"></pre>
         <div id="install-box" class="install-box hidden">
           <div class="install-hint">未检测到 dsh 运行时，请先安装：</div>
           <div class="install-cmd">
@@ -53,6 +55,21 @@
       </div>
     </div>
   </main>
+
+  <!-- 日志弹窗（替代原生 alert，避免超高无法关闭、且冻结界面） -->
+  <div id="logModal" class="log-modal hidden">
+    <div class="log-modal-backdrop" data-close="1"></div>
+    <div class="log-modal-card" role="dialog" aria-modal="true" aria-label="运行日志">
+      <div class="log-modal-head">
+        <span class="log-modal-title">运行日志</span>
+        <div class="log-modal-tools">
+          <button id="logCopy" class="btn ghost small" type="button">复制</button>
+          <button id="logClose" class="log-modal-x" type="button" aria-label="关闭" data-close="1">×</button>
+        </div>
+      </div>
+      <pre id="logBody" class="log-modal-body"></pre>
+    </div>
+  </div>
 
   <script src="renderer.js"></script>
 </body>

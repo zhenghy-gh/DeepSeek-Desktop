@@ -190,56 +190,53 @@ function lerp(a, b, t) {
   return a + (b - a) * t
 }
 
+// 圆角矩形 SDF（macOS Big Sur 标准圆角比例 22.4%）
+function roundedRectDist(x, y, cx, cy, halfW, halfH, r) {
+  const dx = Math.max(Math.abs(x - cx) - (halfW - r), 0)
+  const dy = Math.max(Math.abs(y - cy) - (halfH - r), 0)
+  return Math.hypot(dx, dy) - r
+}
+
 function drawIcon(size) {
   const rgba = Buffer.alloc(size * size * 4)
+  const r = size * 0.224 // 圆角半径
 
-  // 满幅背景：对角渐变 + 顶部高光 + 底部角落氛围光
+  // 圆角渐变背景（圆角外透明）+ 顶部高光
   for (let y = 0; y < size; y++) {
     const ny = y / size
     for (let x = 0; x < size; x++) {
       const nx = x / size
       const i = (y * size + x) * 4
+      const d = roundedRectDist(x + 0.5, y + 0.5, size / 2, size / 2, size / 2, size / 2, r)
+      if (d >= 0) continue // 圆角外透明
       const t = nx * 0.55 + ny * 0.45
-      let r = lerp(0x4d, 0x0b, t)
-      let g = lerp(0x6b, 0x1e, t)
-      let b = lerp(0xfe, 0x4d, t)
-      const glow = Math.max(0, 1 - ny * 3.4)
-      r = lerp(r, 0x7c, glow * 0.5)
-      g = lerp(g, 0x9d, glow * 0.5)
-      b = lerp(b, 0xff, glow * 0.5)
-      const corner = Math.max(0, 1 - Math.hypot(nx - 0.9, ny - 0.95) * 2.4)
-      r = lerp(r, 0x5a, corner * 0.25)
-      g = lerp(g, 0x8c, corner * 0.25)
-      b = lerp(b, 0xff, corner * 0.25)
-      rgba[i] = Math.round(r)
+      let rr = lerp(0x5b, 0x14, t)
+      let g = lerp(0x7c, 0x27, t)
+      let b = lerp(0xff, 0x5e, t)
+      // 顶部高光（柔和）
+      const glow = Math.max(0, 1 - ny * 3.6)
+      rr = lerp(rr, 0x8a, glow * 0.45)
+      g = lerp(g, 0xab, glow * 0.45)
+      b = lerp(b, 0xff, glow * 0.45)
+      rgba[i] = Math.round(rr)
       rgba[i + 1] = Math.round(g)
       rgba[i + 2] = Math.round(b)
       rgba[i + 3] = 255
     }
   }
 
-  // 气泡装饰（半透明圆环）
-  const bubbles = [
-    { cx: 0.76, cy: 0.24, r: 0.085 },
-    { cx: 0.86, cy: 0.38, r: 0.05 },
-    { cx: 0.2, cy: 0.8, r: 0.06 },
-    { cx: 0.12, cy: 0.62, r: 0.035 },
-  ]
-  for (const { cx, cy, r } of bubbles) {
-    const px = cx * size
-    const py = cy * size
-    const pr = r * size
-    for (let y = Math.floor(py - pr - 4); y <= py + pr + 4; y++) {
-      for (let x = Math.floor(px - pr - 4); x <= px + pr + 4; x++) {
-        if (x < 0 || y < 0 || x >= size || y >= size) continue
-        const d = Math.abs(Math.hypot(x - px, y - py) - pr)
-        if (d <= 4) {
-          const a = Math.max(0, 1 - d / 4) * 0.5
-          const i = (y * size + x) * 4
-          rgba[i] = Math.round(rgba[i] * (1 - a) + 255 * a)
-          rgba[i + 1] = Math.round(rgba[i + 1] * (1 - a) + 255 * a)
-          rgba[i + 2] = Math.round(rgba[i + 2] * (1 - a) + 255 * a)
-        }
+  // 边缘内阴影（让圆角更有质感）：距离圆角边 0-10px 渐暗
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4
+      if (rgba[i + 3] === 0) continue
+      const d = roundedRectDist(x + 0.5, y + 0.5, size / 2, size / 2, size / 2, size / 2, r)
+      if (d > -12) {
+        const a = Math.max(0, (-d) / 12) // 0 边缘 → 1 内部
+        const shade = 1 - (1 - a) * 0.35
+        rgba[i] = Math.round(rgba[i] * shade)
+        rgba[i + 1] = Math.round(rgba[i + 1] * shade)
+        rgba[i + 2] = Math.round(rgba[i + 2] * shade)
       }
     }
   }

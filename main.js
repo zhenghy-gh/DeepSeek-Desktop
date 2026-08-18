@@ -28,6 +28,7 @@ let lastStatus = 'connecting'
 let lastDetail = '正在检查 Harness…'
 let lastExtra = {}
 let logTail = [] // last lines of dsh output for diagnostics
+let dshErrBuffer = '' // 累积 dsh 的 stderr，用于把真实启动错误暴露给用户
 
 function log(...args) {
   const line = `[desktop ${new Date().toISOString()}] ${args.join(' ')}`
@@ -77,16 +78,21 @@ function findNode() {
 }
 
 function findBundledDsh() {
-  try {
-    const root = path.join(process.resourcesPath, 'dsh-runtime', 'node_modules')
-    // 优先用真实入口文件（不依赖 .bin 符号链接，跨机器可靠）
-    const real = path.join(root, '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-    if (fs.existsSync(real)) return real
-    const bin = path.join(root, '.bin', 'dsh')
-    return fs.existsSync(bin) ? bin : null
-  } catch {
-    return null
+  // 打包后：dsh-runtime 在 app 的 Resources 下；开发模式（electron .）：在项目根目录下
+  const roots = [
+    path.join(process.resourcesPath, 'dsh-runtime', 'node_modules'),
+    path.join(__dirname, 'dsh-runtime', 'node_modules'),
+  ]
+  for (const root of roots) {
+    try {
+      // 优先用真实入口文件（不依赖 .bin 符号链接，跨机器可靠）
+      const real = path.join(root, '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+      if (fs.existsSync(real)) return real
+      const bin = path.join(root, '.bin', 'dsh')
+      if (fs.existsSync(bin)) return bin
+    } catch { /* ignore */ }
   }
+  return null
 }
 
 function findNpxDsh() {
@@ -120,8 +126,20 @@ function extendedEnv() {
     '/usr/local/bin',
     '/usr/bin',
     '/bin',
-    path.join(os.homedir(), '.nvm', 'versions', 'node', '*', 'bin'),
   ]
+  // 扫描 nvm 实际安装的 node bin 目录。注意：PATH 中的 "*" 通配不会被展开，
+  // 必须枚举真实目录，否则 dsh 子进程内部 spawn node/shell 时找不到 node。
+  try {
+    const nvmDir = path.join(os.homedir(), '.nvm', 'versions', 'node')
+    if (fs.existsSync(nvmDir)) {
+      for (const v of fs.readdirSync(nvmDir)) {
+        const bin = path.join(nvmDir, v, 'bin')
+        try {
+          if (fs.statSync(bin).isDirectory()) extra.push(bin)
+        } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
   const merged = (process.env.PATH || '')
     .split(path.delimiter)
     .filter(Boolean)
@@ -160,7 +178,19 @@ async function findExistingHarness() {
   return null
 }
 
+// 等待端口释放（用于重启前确认旧进程已退出，避免误判复用）
+async function waitPortFree(port, timeoutMs = 5000) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const r = await probePort(port, 600)
+    if (!r.alive) return true
+    await new Promise((r2) => setTimeout(r2, 300))
+  }
+  return false
+}
+
 function spawnHarness(nodePath, dshScript, port, viaPath = false) {
+  dshErrBuffer = '' // 新一轮启动，清空上次的错误缓冲
   const env = extendedEnv()
   const args = nodePath
     ? [dshScript, 'web', '--port', String(port)]
@@ -174,7 +204,12 @@ function spawnHarness(nodePath, dshScript, port, viaPath = false) {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   child.stdout.on('data', (d) => log(`[dsh] ${String(d).trimEnd()}`))
-  child.stderr.on('data', (d) => log(`[dsh:err] ${String(d).trimEnd()}`))
+  child.stderr.on('data', (d) => {
+    const s = String(d).trimEnd()
+    log(`[dsh:err] ${s}`)
+    dshErrBuffer += s + '\n'
+    if (dshErrBuffer.length > 2000) dshErrBuffer = dshErrBuffer.slice(-2000)
+  })
   child.on('error', (err) => {
     // 通过 PATH 调 dsh 但命令不存在（未安装）
     log(`dsh spawn error: ${err.message}`)
@@ -198,20 +233,28 @@ function spawnHarness(nodePath, dshScript, port, viaPath = false) {
 const INSTALL_CMD = 'npm install -g @deepseek-ai/dsh'
 
 let ensureRunning = false
-async function ensureHarness() {
-  if (ensureRunning) return // 防重入（启动时与切标签时可能并发触发）
+let harnessGen = 0
+async function ensureHarness(force = false) {
+  if (ensureRunning && !force) return // 防重入（启动时与切标签时可能并发触发）
+  const myGen = ++harnessGen
   ensureRunning = true
   try {
     sendStatus('connecting', '正在检查 Harness…')
 
-    const existing = await findExistingHarness()
-    if (existing !== null) {
-      harnessPort = existing
-      harnessOwned = false
-      log(`harness already running on port ${existing}, will reuse it`)
-      sendStatus('running', `已连接现有 Harness（端口 ${existing}）`)
-      loadHarnessView()
-      return
+    // 重启时跳过「复用已有进程」逻辑，强制拉起新实例，
+    // 否则会误连刚被杀死、尚未完全退出的残留进程，导致"点了没反应"
+    if (!force) {
+      const existing = await findExistingHarness()
+      if (existing !== null) {
+        harnessPort = existing
+        harnessOwned = false
+        log(`harness already running on port ${existing}, will reuse it`)
+        sendStatus('running', `已连接现有 Harness（端口 ${existing}）`)
+        loadHarnessView()
+        return
+      }
+    } else {
+      log('force restart: 跳过复用探测，准备拉起新实例')
     }
 
     const nodePath = findNode() || process.execPath // 兜底：Electron 自带 Node
@@ -250,6 +293,7 @@ async function ensureHarness() {
       // 等就绪或失败
       let ready = false
       while (Date.now() - started < 60000) {
+        if (myGen !== harnessGen) { log('ensureHarness superseded by newer call, aborting'); return }
         const r = await probePort(port, 1000)
         if (r.alive && r.isHarness) {
           ready = true
@@ -283,10 +327,12 @@ async function ensureHarness() {
       }
       harnessChild = null
     }
-    sendStatus('error', `Harness 启动失败：${lastErr || '未知错误'}`)
+    if (myGen !== harnessGen) return
+    const dshErrTail = dshErrBuffer.trim().split('\n').slice(-6).join('\n').slice(0, 300)
+    sendStatus('error', `Harness 启动失败：${lastErr || '未知错误'}`, { dshErr: dshErrTail })
     log('harness start failed, last lines:', logTail.slice(-20).join('\n'))
   } finally {
-    ensureRunning = false
+    if (myGen === harnessGen) ensureRunning = false
   }
 }
 
@@ -467,11 +513,16 @@ ipcMain.handle('desk:open-external', (_e, url) => {
 })
 
 ipcMain.handle('desk:restart-harness', async () => {
-  if (harnessOwned) {
-    stopOwnHarness()
-    await new Promise((r) => setTimeout(r, 800))
+  // 彻底停掉我们拉起的 Harness 进程（SIGKILL 确保退出，避免残留进程被误复用）
+  if (harnessOwned && harnessChild) {
+    log('restart-harness: 杀死已拥有的 Harness 子进程')
+    try { harnessChild.kill('SIGKILL') } catch { /* ignore */ }
+    harnessChild = null
   }
-  await ensureHarness()
+  harnessOwned = false
+  // 等待原端口释放，防止 ensureHarness 探测时误判复用残留进程
+  await waitPortFree(harnessPort, 5000).catch(() => {})
+  await ensureHarness(true)
   return { port: harnessPort }
 })
 
