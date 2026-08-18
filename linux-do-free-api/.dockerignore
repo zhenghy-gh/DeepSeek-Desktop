@@ -1,0 +1,9 @@
+node_modules
+.git
+.gitignore
+.workbuddy
+data
+*.log
+test
+docs
+README.md

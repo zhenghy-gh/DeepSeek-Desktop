@@ -1,0 +1,55 @@
+services:
+  ldfa:
+    build: .
+    image: linux-do-free-api
+    container_name: linux-do-free-api
+    restart: unless-stopped
+    ports:
+      - "3090:3090"
+    environment:
+      # 监听地址（容器内一般保持 0.0.0.0）
+      HOST: 0.0.0.0
+      PORT: 3090
+      # 号池数据文件（容器内默认 /app/data/accounts.json）
+      DATA_FILE: /app/data/accounts.json
+      # 管理端令牌：保护 /admin/* 与 /metrics（不设置则本地开放）
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # 代理端令牌：保护 /v1/chat/completions 与 /v1/embeddings（不设置则开放）
+      PROXY_AUTH_TOKEN: ${PROXY_AUTH_TOKEN:-}
+      # 上游整体超时（连接 + 读取，ms）
+      UPSTREAM_TIMEOUT_MS: 60000
+      # 连接建立超时（ms）
+      CONNECT_TIMEOUT_MS: 8000
+      # 流式空闲超时（ms）：上游长时间不发数据则中断，避免挂死
+      STREAM_IDLE_TIMEOUT_MS: 30000
+      # 选号策略 weighted | round_robin | least_used
+      POOL_STRATEGY: weighted
+      # 每账号最大并发（0 = 不限）。免费账号建议设小一点（如 2）
+      MAX_CONCURRENCY_PER_ACCOUNT: 0
+      # 连续错误达到该值自动熔断禁用该账号（0 = 关闭熔断）
+      CONSECUTIVE_FAILURE_LIMIT: 0
+      # 允许跨域（设为 * 或具体源，便于本地前端调用；留空关闭）
+      ALLOW_CORS: ""
+      # 日志级别 debug | info | warn | error
+      LOG_LEVEL: info
+      # 日志写文件（容器内建议挂卷）：/app/data/ldfa.log
+      LOG_FILE: ""
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3090/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # 可选：本地 Prometheus 抓取 /metrics（?format=prometheus）
+  # 取消注释即可启用：docker compose --profile monitoring up
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro

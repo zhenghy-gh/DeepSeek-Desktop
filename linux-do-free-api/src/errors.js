@@ -12,6 +12,16 @@ const KEY_PATTERNS = [
   /key.*(expired|revoked|invalid)/i, /未授权/i, /鉴权/i,
 ];
 
+// 上下文/Token 长度超限：属于请求本身的问题，换账号无效，不应切换
+const CONTEXT_LENGTH_PATTERNS = [
+  /context.*(length|window)/i,
+  /maximum.*(context|token)/i,
+  /token.*(limit|exceed)/i,
+  /prompt.*too long/i,
+  /exceed.*(context|token|length)/i,
+  /超过.*(上下文|长度|token)/i,
+];
+
 export function classifyError(statusCode, bodyText = '') {
   const text = String(bodyText || '');
   if (statusCode === 0) return { type: 'network', retryable: true, transient: true };
@@ -25,6 +35,7 @@ export function classifyError(statusCode, bodyText = '') {
   if (QUOTA_PATTERNS.some((r) => r.test(text))) return { type: 'quota', retryable: false, transient: true };
   if (KEY_PATTERNS.some((r) => r.test(text))) return { type: 'invalid_key', retryable: false, transient: false };
   if (statusCode >= 500) return { type: 'upstream_error', retryable: true, transient: true };
+  if (CONTEXT_LENGTH_PATTERNS.some((r) => r.test(text))) return { type: 'context_length', retryable: false, transient: false };
   // 4xx 其他（400 参数错误等）通常是请求本身的问题，不应切换账号重试
   if (statusCode >= 400) return { type: 'client_error', retryable: false, transient: false };
   return { type: 'unknown', retryable: true, transient: true };
@@ -37,5 +48,6 @@ export const ERROR_MESSAGES = {
   upstream_error: '上游中转站异常',
   network: '网络错误，无法连接上游',
   client_error: '请求被上游拒绝（可能是参数问题）',
+  context_length: '请求超出模型的上下文/Token 长度限制',
   unknown: '未知上游错误',
 };

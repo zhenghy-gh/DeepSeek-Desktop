@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>linux-do-free-api · 号池</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2f3a;
+    --text: #e6e9ef;
+    --muted: #9aa4b2;
+    --accent: #4f8cff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+    padding: 14px 20px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 10;
+  }
+  h1 { font-size: 16px; margin: 0; }
+  h2 { font-size: 14px; color: var(--muted); margin: 18px 20px 8px; font-weight: 600; }
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  input[type=password], input[type=text] {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 6px; outline: none; min-width: 200px;
+  }
+  button {
+    background: var(--accent); color: #fff; border: 0; padding: 6px 14px;
+    border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { filter: brightness(1.1); }
+  label { color: var(--muted); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .badge { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+  table { width: calc(100% - 40px); margin: 0 20px 10px; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 600; background: #1c2029; }
+  tr:last-child td { border-bottom: 0; }
+  .s-active { color: var(--ok); }
+  .s-exhausted { color: var(--warn); }
+  .s-disabled { color: var(--err); }
+  pre { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin: 0 20px 20px; padding: 12px; overflow: auto; max-height: 360px; color: var(--muted); }
+  .empty { color: var(--muted); padding: 0 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>linux-do-free-api · 号池概览</h1>
+  <div class="controls">
+    <input id="token" type="password" placeholder="可选：ADMIN_TOKEN" />
+    <input id="proxyToken" type="password" placeholder="可选：PROXY_AUTH_TOKEN（代理测试用）" />
+    <label><input type="checkbox" id="auto" /> 自动刷新 5s</label>
+    <button id="refresh">刷新</button>
+    <span class="badge">客户端调用 /v1/* 若启用 PROXY_AUTH_TOKEN 需带 Authorization</span>
+  </div>
+</header>
+
+<section>
+  <h2>号池 <span id="poolStatus" class="badge"></span></h2>
+  <div id="poolWrap"></div>
+  <div id="poolActions" style="margin:0 20px 16px; display:none;">
+    <button id="healthCheck" style="background:#238636;">一键体检</button>
+    <label style="margin-left:8px;"><input type="checkbox" id="autoDisable" /> 不可达自动下线</label>
+    <span id="healthSummary" style="color:var(--muted); margin-left:8px;"></span>
+  </div>
+</section>
+
+<section>
+  <h2>新增账号</h2>
+  <div style="margin:0 20px 16px; display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
+    <label>名称<input id="nName" type="text" placeholder="可选" style="min-width:120px;" /></label>
+    <label>Base URL<input id="nBase" type="text" placeholder="https://relay.example.com" style="min-width:220px;" /></label>
+    <label>API Key<input id="nKey" type="text" placeholder="sk-..." style="min-width:200px;" /></label>
+    <label>模型<input id="nModels" type="text" placeholder="m1,m2" style="min-width:160px;" /></label>
+    <label>分组<input id="nGroups" type="text" placeholder="可选 g1,g2" style="min-width:140px;" /></label>
+    <button id="addAccount">添加</button>
+    <span id="addMsg" style="color:var(--muted);"></span>
+  </div>
+</section>
+
+<section>
+  <h2>运行指标 <button id="resetMetrics" style="padding:4px 10px;font-size:12px;">重置</button></h2>
+  <div id="kpi" style="margin:0 20px 12px; display:flex; flex-wrap:wrap; gap:10px;"></div>
+  <pre id="metrics">加载中…</pre>
+</section>
+
+<section>
+  <h2>代理连通性测试</h2>
+  <div style="margin:0 20px 16px; display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
+    <label>模型<input id="tModel" type="text" placeholder="如 gpt-4o-mini" style="min-width:160px;" /></label>
+    <button id="testProxy">发送测试请求</button>
+    <span id="testMsg" style="color:var(--muted);"></span>
+  </div>
+</section>
+
+<script>
+  const $ = (s) => document.querySelector(s);
+  let timer = null;
+  let editingId = null;
+  let lastAccounts = [];
+
+  async function api(path, method = 'GET', body) {
+    const token = $('#token').value.trim();
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const opts = { method, headers };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const r = await fetch(path, opts);
+    if (r.status === 401) throw new Error('未授权：请填入正确的 ADMIN_TOKEN');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+
+  function statusClass(s) {
+    return s === 'active' ? 's-active' : s === 'exhausted' ? 's-exhausted' : 's-disabled';
+  }
+
+  function renderPool(accounts) {
+    const wrap = $('#poolWrap');
+    const token = $('#token').value.trim();
+    const admin = !!token;
+    $('#poolActions').style.display = admin ? 'block' : 'none';
+    if (!accounts.length) {
+      wrap.innerHTML = '<div class="empty">号池为空，用下方表单添加账号（需填入 ADMIN_TOKEN）。</div>';
+      return;
+    }
+    const rows = accounts.map((a) => {
+      const actions = admin
+        ? `<button data-act="toggle" data-id="${a.id}" data-status="${a.status}">${a.status === 'disabled' ? '启用' : '禁用'}</button>
+           <button data-act="edit" data-id="${a.id}">编辑</button>
+           <button data-act="remove" data-id="${a.id}">删除</button>
+           <button data-act="purge" data-id="${a.id}" style="background:var(--err);">彻底删</button>`
+        : '—';
+      let html = `
+      <tr>
+        <td>${a.name || ''}</td>
+        <td class="${statusClass(a.status)}">${a.status}</td>
+        <td>${(a.models || []).join(', ') || '(空)'}</td>
+        <td>${(a.groups || []).join(', ') || '—'}</td>
+        <td>${a.used || 0}</td>
+        <td>${a.totalTokens || 0}</td>
+        <td>${a.consecutiveErrors || 0}</td>
+        <td>${a.lastErrorAt ? new Date(a.lastErrorAt).toLocaleString() : '—'}</td>
+        <td>${a.lastError ? String(a.lastError).slice(0, 60) : '—'}</td>
+        <td>${actions}</td>
+      </tr>`;
+      if (editingId === a.id) {
+        html += `
+      <tr class="edit-row" data-edit="${a.id}">
+        <td colspan="9">
+          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;">
+            <label>模型<input id="eModels" type="text" value="${(a.models || []).join(',')}" style="min-width:200px;" /></label>
+            <label>分组<input id="eGroups" type="text" value="${(a.groups || []).join(',')}" style="min-width:140px;" /></label>
+            <label>权重<input id="eWeight" type="text" value="${a.weight || 1}" style="min-width:70px;" /></label>
+            <label>备注<input id="eNote" type="text" value="${a.note || ''}" placeholder="可选" style="min-width:200px;" /></label>
+            <label>模型级权重<input id="eModelWeights" type="text" value="${a.modelWeights ? JSON.stringify(a.modelWeights) : ''}" placeholder='可选 {"gpt-4o":3}' style="min-width:200px;" /></label>
+            <button id="eSave" data-id="${a.id}">保存</button>
+            <button id="eCancel" data-id="${a.id}" style="background:var(--border);">取消</button>
+            <span id="eMsg" style="color:var(--muted);"></span>
+          </div>
+        </td>
+      </tr>`;
+      }
+      return html;
+    }).join('');
+    wrap.innerHTML = `
+      <table>
+        <thead><tr><th>名称</th><th>状态</th><th>模型</th><th>分组</th><th>用量</th><th>Token</th><th>连续错误</th><th>最后错误时间</th><th>最后错误</th><th>操作</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    wrap.querySelectorAll('button[data-act]').forEach((btn) => {
+      btn.onclick = async () => {
+        const id = btn.dataset.id;
+        const act = btn.dataset.act;
+        try {
+          if (act === 'remove') {
+            if (!confirm('确认删除该账号？')) return;
+            await api('/admin/pool/' + id + '/remove', 'POST');
+          } else if (act === 'toggle') {
+            const next = btn.dataset.status === 'disabled' ? 'enable' : 'disable';
+            await api('/admin/pool/' + id + '/' + next, 'POST');
+          } else if (act === 'purge') {
+            if (!confirm('彻底删除该账号（不可恢复）？')) return;
+            await api('/admin/pool/' + id + '/purge', 'POST');
+          } else if (act === 'edit') {
+            editingId = editingId === id ? null : id;
+            renderPool(lastAccounts);
+            return;
+          }
+          await load();
+        } catch (e) {
+          alert('操作失败：' + e.message);
+        }
+      };
+    });
+    const saveBtn = wrap.querySelector('#eSave');
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        const id = saveBtn.dataset.id;
+        let modelWeights = undefined;
+        const mwRaw = wrap.querySelector('#eModelWeights').value.trim();
+        if (mwRaw) {
+          try { modelWeights = JSON.parse(mwRaw); }
+          catch { wrap.querySelector('#eMsg').textContent = '模型级权重 JSON 非法'; return; }
+        }
+        const body = {
+          models: wrap.querySelector('#eModels').value.trim(),
+          groups: wrap.querySelector('#eGroups').value.trim(),
+          weight: wrap.querySelector('#eWeight').value.trim(),
+          note: wrap.querySelector('#eNote').value.trim(),
+          modelWeights,
+        };
+        try {
+          await api('/admin/pool/' + id + '/edit', 'POST', body);
+          editingId = null;
+          await load();
+        } catch (e) {
+          wrap.querySelector('#eMsg').textContent = '保存失败：' + e.message;
+        }
+      };
+    }
+    const cancelBtn = wrap.querySelector('#eCancel');
+    if (cancelBtn) cancelBtn.onclick = () => { editingId = null; renderPool(lastAccounts); };
+  }
+
+  function renderKpi(m) {
+    const total = m.totalRequests || 0;
+    const ok = m.totalSuccess || 0;
+    const fail = m.totalFailure || 0;
+    const rate = total ? ((ok / total) * 100).toFixed(1) : '—';
+    const items = [
+      ['总请求', total],
+      ['成功', ok],
+      ['失败', fail],
+      ['成功率', total ? rate + '%' : '—'],
+      ['p95延迟', (m.p95LatencyMs || 0) + 'ms'],
+      ['总Token', m.totalTokens || 0],
+      ['估算成本', '$' + (m.estimatedCostUsd || 0).toFixed(4)],
+      ['并发跳过', m.totalConcurrencyLimited || 0],
+      ['熔断', m.totalCircuitOpened || 0],
+      ['运行时长', (m.uptimeSec || 0) + 's'],
+    ];
+    $('#kpi').innerHTML = items.map(([k, v]) =>
+      `<span style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px 12px;">
+        <span style="color:var(--muted);font-size:12px;">${k}</span>
+        <b style="margin-left:6px;font-size:15px;">${v}</b></span>`
+    ).join('');
+  }
+
+  async function load() {
+    try {
+      const pool = await api('/admin/pool');
+      const accounts = pool.accounts || [];
+      lastAccounts = accounts;
+      renderPool(accounts);
+      const models = new Set();
+      accounts.forEach((a) => (a.models || []).forEach((m) => models.add(m)));
+      const m = await api('/metrics');
+      $('#metrics').textContent = JSON.stringify(m, null, 2);
+      renderKpi(m);
+      $('#poolStatus').textContent = `共 ${accounts.length} 个账号 · ${models.size} 个模型`;
+    } catch (e) {
+      $('#poolStatus').textContent = e.message;
+      $('#metrics').textContent = e.message;
+    }
+  }
+
+  $('#resetMetrics').onclick = async () => {
+    try {
+      await api('/admin/metrics/reset', 'POST');
+      await load();
+    } catch (e) {
+      alert('重置失败：' + e.message);
+    }
+  };
+  $('#addAccount').onclick = async () => {
+    const body = {
+      name: $('#nName').value.trim() || undefined,
+      baseUrl: $('#nBase').value.trim(),
+      apiKey: $('#nKey').value.trim(),
+      models: $('#nModels').value.trim(),
+      groups: $('#nGroups').value.trim(),
+    };
+    if (!body.baseUrl || !body.apiKey) { $('#addMsg').textContent = 'Base URL 与 API Key 必填'; return; }
+    try {
+      const r = await api('/admin/pool', 'POST', body);
+      $('#addMsg').textContent = '已添加：' + (r.account && r.account.name);
+      $('#nName').value = $('#nBase').value = $('#nKey').value = $('#nModels').value = $('#nGroups').value = '';
+      await load();
+    } catch (e) {
+      $('#addMsg').textContent = '添加失败：' + e.message;
+    }
+  };
+  $('#healthCheck').onclick = async () => {
+    $('#healthSummary').textContent = '体检中…';
+    try {
+      const autoDisable = $('#autoDisable').checked;
+      const r = await api('/admin/health-check', 'POST', autoDisable ? { autoDisable: true } : {});
+      let msg = `可达 ${r.reachable}/${r.total}`;
+      if (r.autoDisabled && r.autoDisabled.length) msg += `，已自动下线 ${r.autoDisabled.length} 个`;
+      $('#healthSummary').textContent = msg;
+      if (autoDisable) await load();
+    } catch (e) {
+      $('#healthSummary').textContent = '失败：' + e.message;
+    }
+  };
+  $('#token').addEventListener('input', load);
+  $('#refresh').onclick = load;
+  $('#auto').onchange = (e) => {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (e.target.checked) timer = setInterval(load, 5000);
+  };
+
+  // 代理连通性测试：用 PROXY_AUTH_TOKEN 发一个最小 chat 请求，验证 /v1/chat/completions 链路
+  async function apiProxy(method, body) {
+    const token = $('#proxyToken').value.trim();
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const opts = { method, headers };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const r = await fetch('/v1/chat/completions', opts);
+    return { status: r.status, text: await r.text() };
+  }
+  $('#testProxy').onclick = async () => {
+    const model = $('#tModel').value.trim();
+    if (!model) { $('#testMsg').textContent = '请填写要测试的模型名'; return; }
+    $('#testMsg').textContent = '请求中…';
+    try {
+      const res = await apiProxy('POST', {
+        model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false,
+      });
+      if (res.status === 401) $('#testMsg').textContent = '未授权：请填入正确的 PROXY_AUTH_TOKEN';
+      else if (res.status === 200) $('#testMsg').textContent = '✅ 代理链路正常 (200)';
+      else $('#testMsg').textContent = '状态码 ' + res.status + '：' + res.text.slice(0, 200);
+    } catch (e) {
+      $('#testMsg').textContent = '请求失败：' + e.message;
+    }
+  };
+
+  load();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "_comment": "可选价格表：每 1000 tokens 的 USD 价格，用于估算成本（estimatedCostUsd）。不清楚价格可删除本文件或留空对象 {}。",
+  "gpt-4o": { "prompt": 0.005, "completion": 0.015 },
+  "gpt-4o-mini": { "prompt": 0.00015, "completion": 0.0006 },
+  "deepseek-chat": { "prompt": 0.00027, "completion": 0.0011 },
+  "text-embedding-3-small": { "prompt": 0.00002, "completion": 0 }
+}
